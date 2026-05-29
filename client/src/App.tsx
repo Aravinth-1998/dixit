@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { socket, emit } from './socket';
 import type { PrivateState } from '../../shared/src/types.ts';
 import {
@@ -8,6 +8,7 @@ import {
   MAX_WIN_SCORE,
   DEFAULT_WIN_SCORE,
 } from '../../shared/src/types.ts';
+import { sounds, buzz, unlockAudio } from './sounds';
 
 type Saved = { code: string; token: string };
 const SAVE_KEY = 'dixit.session';
@@ -43,6 +44,22 @@ export default function App() {
   const [state, setState] = useState<PrivateState | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [connected, setConnected] = useState(socket.connected);
+  const { info, dismissInfo } = useGameAlerts(state);
+
+  // Unlock WebAudio on the very first user gesture (required by Safari/iOS).
+  useEffect(() => {
+    const onFirst = () => {
+      unlockAudio();
+      window.removeEventListener('pointerdown', onFirst);
+      window.removeEventListener('keydown', onFirst);
+    };
+    window.addEventListener('pointerdown', onFirst, { once: true });
+    window.addEventListener('keydown', onFirst, { once: true });
+    return () => {
+      window.removeEventListener('pointerdown', onFirst);
+      window.removeEventListener('keydown', onFirst);
+    };
+  }, []);
 
   useEffect(() => {
     socket.on('connect', () => {
@@ -96,6 +113,11 @@ export default function App() {
       {!state && <Home onJoined={s => saveSession(s)} setError={setError} />}
       {state && <Game state={state} setError={setError} />}
 
+      {info && (
+        <div className="toast info" onClick={dismissInfo}>
+          {info}
+        </div>
+      )}
       {error && <div className="toast">{error}</div>}
     </div>
   );
@@ -488,6 +510,7 @@ function VotePhase({
   setError: (m: string) => void;
 }) {
   const [picked, setPicked] = useState<string | null>(null);
+  const [zoom, setZoom] = useState<string | null>(null);
   const me = state.players.find(p => p.id === state.you.id)!;
   // The card I submitted is on the table; I can't vote it.
   const myOwnCard = state.you.isStoryteller ? null : findMyCardOnTable(state);
@@ -528,6 +551,17 @@ function VotePhase({
               onClick={() => !disabled && setPicked(c.cardId)}
             >
               <img src={cardUrl(c.cardId)} alt="" />
+              <button
+                className="card-zoom-btn"
+                title="Zoom"
+                aria-label="Zoom card"
+                onClick={e => {
+                  e.stopPropagation();
+                  setZoom(c.cardId);
+                }}
+              >
+                🔍
+              </button>
               {isMine && <div className="owner">your card</div>}
             </div>
           );
@@ -543,6 +577,7 @@ function VotePhase({
           Cast vote
         </button>
       )}
+      <CardZoom cardId={zoom} onClose={() => setZoom(null)} />
     </div>
   );
 }
@@ -562,6 +597,7 @@ function RevealPhase({
   setError: (m: string) => void;
 }) {
   const reveal = state.reveal!;
+  const [zoom, setZoom] = useState<string | null>(null);
   const playerName = (id: string) =>
     state.players.find(p => p.id === id)?.name ?? '?';
 
@@ -586,6 +622,8 @@ function RevealPhase({
             className={
               'card' + (c.cardId === reveal.storytellerCardId ? ' story' : '')
             }
+            onClick={() => setZoom(c.cardId)}
+            style={{ cursor: 'zoom-in' }}
           >
             <img src={cardUrl(c.cardId)} alt="" />
             <div className="owner">{playerName(c.ownerId)}</div>
@@ -624,6 +662,7 @@ function RevealPhase({
           Waiting for host to continue…
         </p>
       )}
+      <CardZoom cardId={zoom} onClose={() => setZoom(null)} />
     </div>
   );
 }
@@ -681,17 +720,133 @@ function Hand({
   selected?: string | null;
   onPick?: (id: string) => void;
 }) {
+  const [zoom, setZoom] = useState<string | null>(null);
   return (
-    <div className="card-grid">
-      {cards.map(c => (
-        <div
-          key={c}
-          className={'card' + (selected === c ? ' selected' : '') + (onPick ? '' : ' disabled')}
-          onClick={() => onPick?.(c)}
-        >
-          <img src={cardUrl(c)} alt="" />
-        </div>
-      ))}
+    <>
+      <div className="card-grid">
+        {cards.map(c => (
+          <div
+            key={c}
+            className={'card' + (selected === c ? ' selected' : '') + (onPick ? '' : ' disabled')}
+            onClick={() => onPick?.(c)}
+          >
+            <img src={cardUrl(c)} alt="" />
+            <button
+              className="card-zoom-btn"
+              title="Zoom"
+              aria-label="Zoom card"
+              onClick={e => {
+                e.stopPropagation();
+                setZoom(c);
+              }}
+            >
+              🔍
+            </button>
+          </div>
+        ))}
+      </div>
+      <CardZoom cardId={zoom} onClose={() => setZoom(null)} />
+    </>
+  );
+}
+
+// ---------- Card zoom lightbox ----------
+function CardZoom({
+  cardId,
+  onClose,
+}: {
+  cardId: string | null;
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    if (!cardId) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [cardId, onClose]);
+  if (!cardId) return null;
+  return (
+    <div className="zoom-overlay" onClick={onClose} role="dialog" aria-modal="true">
+      <img src={cardUrl(cardId)} alt="" />
     </div>
   );
 }
+
+// ---------- Game alerts (audio + vibration + info toast) ----------
+function useGameAlerts(state: PrivateState | null) {
+  const prev = useRef<{
+    phase?: string;
+    round?: number;
+    storytellerId?: string | null;
+    youId?: string;
+  }>({});
+  const [info, setInfo] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!state) {
+      prev.current = {};
+      return;
+    }
+    const p = prev.current;
+    const youChanged = p.youId !== state.you.id;
+    const phaseChanged =
+      youChanged ||
+      p.phase !== state.phase ||
+      p.round !== state.roundNumber ||
+      p.storytellerId !== state.storytellerId;
+
+    if (phaseChanged && !youChanged) {
+      if (state.phase === 'CLUE' && state.you.isStoryteller) {
+        sounds.yourTurn();
+        buzz([140, 80, 140]);
+        setInfo("🎙️ You're the storyteller — pick a card and give a clue!");
+      } else if (state.phase === 'SUBMIT' && !state.you.isStoryteller) {
+        sounds.phaseAdvance();
+        buzz(120);
+        setInfo('🃏 Pick a card from your hand that fits the clue.');
+      } else if (state.phase === 'VOTE' && !state.you.isStoryteller) {
+        sounds.phaseAdvance();
+        buzz(120);
+        setInfo("🗳️ Vote — which card is the storyteller's?");
+      } else if (state.phase === 'REVEAL') {
+        sounds.reveal();
+        buzz([60, 50, 60]);
+      } else if (state.phase === 'GAME_OVER') {
+        const won = state.winnerIds.includes(state.you.id);
+        if (won) {
+          sounds.victory();
+          buzz([200, 100, 200, 100, 400]);
+          setInfo('🏆 You won! ');
+        } else {
+          sounds.gameOverSoft();
+          buzz(200);
+        }
+      }
+    }
+
+    prev.current = {
+      phase: state.phase,
+      round: state.roundNumber,
+      storytellerId: state.storytellerId,
+      youId: state.you.id,
+    };
+  }, [
+    state?.phase,
+    state?.roundNumber,
+    state?.storytellerId,
+    state?.you?.id,
+    state?.you?.isStoryteller,
+    state?.winnerIds,
+  ]);
+
+  useEffect(() => {
+    if (!info) return;
+    const t = setTimeout(() => setInfo(null), 5000);
+    return () => clearTimeout(t);
+  }, [info]);
+
+  return { info, dismissInfo: () => setInfo(null) };
+}
+

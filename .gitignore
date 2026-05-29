@@ -7,3 +7,4 @@ client/tsconfig.tsbuildinfo
 cloudflared.exe
 tunnel.log
 server.log
+data/
