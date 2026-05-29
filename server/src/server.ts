@@ -85,6 +85,47 @@ if (existsSync(clientDist)) {
 // ---------- Helpers ----------
 const phaseTimers = new Map<string, NodeJS.Timeout>();
 
+// Grace window for lobby disconnects. A page refresh closes the socket and
+// immediately reconnects; we don't want that to look like the player left.
+const LOBBY_REJOIN_GRACE_MS = 20_000;
+// key: `${roomCode}:${playerToken}` -> pending eviction timer
+const lobbyEvictionTimers = new Map<string, NodeJS.Timeout>();
+
+function evictionKey(code: string, token: string) {
+  return `${code}:${token}`;
+}
+
+function clearLobbyEviction(code: string, token: string) {
+  const k = evictionKey(code, token);
+  const t = lobbyEvictionTimers.get(k);
+  if (t) {
+    clearTimeout(t);
+    lobbyEvictionTimers.delete(k);
+  }
+}
+
+function scheduleLobbyEviction(code: string, token: string) {
+  clearLobbyEviction(code, token);
+  const timer = setTimeout(() => {
+    lobbyEvictionTimers.delete(evictionKey(code, token));
+    const room = getRoom(code);
+    if (!room || room.phase !== 'LOBBY') return;
+    const player = room.players.find(p => p.id === token);
+    if (!player || player.connected) return; // they came back — leave them alone
+    const wasHost = player.isHost;
+    room.players = room.players.filter(p => p.id !== token);
+    if (room.players.length === 0) {
+      clearPhaseTimer(code);
+      deleteRoom(code);
+      return;
+    }
+    if (wasHost) room.players[0].isHost = true;
+    broadcast(room);
+  }, LOBBY_REJOIN_GRACE_MS);
+  timer.unref?.();
+  lobbyEvictionTimers.set(evictionKey(code, token), timer);
+}
+
 /** Cancel any pending auto-expire for this room. */
 function clearPhaseTimer(code: string) {
   const t = phaseTimers.get(code);
@@ -211,6 +252,8 @@ io.on('connection', socket => {
       if (isBanned(room, token)) return cb(err('You were removed from this room'));
       const player = room.players.find(p => p.id === token);
       if (!player) return cb(err('Player not in room'));
+      // They beat the grace window — cancel any pending lobby eviction.
+      clearLobbyEviction(room.code, token);
       player.socketId = socket.id;
       player.connected = true;
       socket.join(room.code);
@@ -229,6 +272,7 @@ io.on('connection', socket => {
     if (idx === -1) return;
     if (room.phase === 'LOBBY') {
       const [removed] = room.players.splice(idx, 1);
+      clearLobbyEviction(room.code, removed.id);
       // If host left, promote next; if empty, delete room.
       if (room.players.length === 0) {
         clearPhaseTimer(room.code);
@@ -361,16 +405,12 @@ io.on('connection', socket => {
     const player = room.players.find(p => p.id === idx.token);
     if (!player) return;
     if (room.phase === 'LOBBY') {
-      // Remove from lobby on disconnect (they can re-join)
-      const i = room.players.indexOf(player);
-      const wasHost = player.isHost;
-      room.players.splice(i, 1);
-      if (room.players.length === 0) {
-        clearPhaseTimer(room.code);
-        deleteRoom(room.code);
-        return;
-      }
-      if (wasHost) room.players[0].isHost = true;
+      // Don't kick lobby players on disconnect — they might just be
+      // refreshing the page. Mark them disconnected and give them a short
+      // grace window to come back. If they don't, drop them.
+      player.connected = false;
+      player.socketId = null;
+      scheduleLobbyEviction(room.code, player.id);
     } else {
       player.connected = false;
       player.socketId = null;

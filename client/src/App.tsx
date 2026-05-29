@@ -683,6 +683,8 @@ function Lobby({
   setError: (m: string) => void;
 }) {
   const full = state.players.length === state.maxPlayers;
+  const allConnected = state.players.every(p => p.connected);
+  const canStart = full && allConnected;
   const start = async () => {
     try {
       await callEmit('startGame', { code: state.code });
@@ -699,8 +701,12 @@ function Lobby({
         Share the room code or invite link.
       </p>
       {state.you.isHost ? (
-        <button className="btn" disabled={!full} onClick={start}>
-          {full ? 'Start game' : 'Waiting for players…'}
+        <button className="btn" disabled={!canStart} onClick={start}>
+          {!full
+            ? 'Waiting for players…'
+            : !allConnected
+            ? 'Waiting for a player to reconnect…'
+            : 'Start game'}
         </button>
       ) : (
         <p className="muted">Waiting for host to start…</p>

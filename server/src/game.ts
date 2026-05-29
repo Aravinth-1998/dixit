@@ -333,6 +333,8 @@ export function startGame(room: Room, allCardIds: string[]) {
   if (room.phase !== 'LOBBY') throw new Error('Game already started');
   if (room.players.length !== room.maxPlayers)
     throw new Error('Waiting for all players to join');
+  if (room.players.some(p => !p.connected))
+    throw new Error('Waiting for a player to reconnect…');
   // Pick a fresh random subset of the full card pool for THIS match.
   room.deck = createDeck(allCardIds, room.players.length);
   for (const p of room.players) {
