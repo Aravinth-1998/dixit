@@ -1,7 +1,7 @@
 # Build stage
 FROM node:20-alpine AS build
 WORKDIR /app
-COPY package.json ./
+COPY package.json package-lock.json tsconfig.base.json ./
 COPY shared ./shared
 COPY server ./server
 COPY client ./client
