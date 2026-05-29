@@ -294,6 +294,7 @@ function Home({
           <button className="btn" onClick={() => setMode('create')}>Create room</button>
           <button className="btn secondary" onClick={() => setMode('join')}>Join room</button>
         </div>
+        <Rules />
       </div>
     );
   }
@@ -420,6 +421,113 @@ function Home({
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+// ---------- Rules / help (collapsible sections on landing page) ----------
+function Rules() {
+  return (
+    <div style={{ marginTop: 14, display: 'grid', gap: 10 }}>
+      <CollapsibleSection title="📖 How to play">
+        <ol className="rules-list">
+          <li>
+            Each round, one player is the <b>storyteller</b>. The role rotates each round.
+          </li>
+          <li>
+            The storyteller secretly picks one card from their hand of 6 and gives
+            a <b>clue</b>: a word, phrase, sound, song lyric — anything inspired by the card.
+            The art of Dixit is making a clue that <i>some</i> players will guess but not all.
+            Too obvious or too obscure both cost you points.
+          </li>
+          <li>
+            Every other player secretly picks a card from their own hand that
+            best fits the storyteller's clue (trying to fool the others into voting for it).
+          </li>
+          <li>
+            All chosen cards are shuffled and laid face-up on the table.
+          </li>
+          <li>
+            Everyone except the storyteller secretly <b>votes</b> for the card they
+            think is the storyteller's. You can't vote for your own card.
+          </li>
+          <li>
+            Cards are revealed along with who placed each, and points are awarded
+            (see Points below).
+          </li>
+          <li>
+            Everyone draws back to 6 cards, the storyteller role passes to the
+            next player, and a new round begins.
+          </li>
+          <li>
+            First player to reach the target score wins. If the deck runs out
+            before then, the highest score wins.
+          </li>
+        </ol>
+      </CollapsibleSection>
+
+      <CollapsibleSection title="🏆 Points system">
+        <p style={{ marginTop: 0 }}>
+          Scoring follows the official Dixit rules:
+        </p>
+        <ul className="rules-list">
+          <li>
+            <b>If everyone guesses the storyteller's card</b>, or <b>nobody does</b>:
+            <ul>
+              <li>Storyteller: <b>0</b> points</li>
+              <li>Every other player: <b>+2</b> points</li>
+            </ul>
+            <span className="muted">
+              The clue was either too obvious or too cryptic.
+            </span>
+          </li>
+          <li style={{ marginTop: 8 }}>
+            <b>Otherwise</b> (some — but not all — players guessed):
+            <ul>
+              <li>Storyteller: <b>+3</b> points</li>
+              <li>Each player who guessed correctly: <b>+3</b> points</li>
+            </ul>
+            <span className="muted">
+              The clue was just right — some friends were fooled.
+            </span>
+          </li>
+          <li style={{ marginTop: 8 }}>
+            <b>Bonus for fooling others:</b> every non-storyteller gets
+            <b> +1 point</b> for each vote their card received from someone
+            else (in addition to anything above).
+          </li>
+        </ul>
+        <p className="muted" style={{ fontSize: 13 }}>
+          Tip: aim to make a clue that gets <i>some</i> right answers and tempts
+          others toward your decoy.
+        </p>
+      </CollapsibleSection>
+    </div>
+  );
+}
+
+function CollapsibleSection({
+  title,
+  children,
+  defaultOpen = false,
+}: {
+  title: string;
+  children: React.ReactNode;
+  defaultOpen?: boolean;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div className="collapsible">
+      <button
+        type="button"
+        className="collapsible-head"
+        onClick={() => setOpen(o => !o)}
+        aria-expanded={open}
+      >
+        <span>{title}</span>
+        <span className="muted" style={{ fontSize: 14 }}>{open ? '▾' : '▸'}</span>
+      </button>
+      {open && <div className="collapsible-body">{children}</div>}
     </div>
   );
 }
