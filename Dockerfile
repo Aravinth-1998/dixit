@@ -5,7 +5,6 @@ COPY package.json ./
 COPY shared ./shared
 COPY server ./server
 COPY client ./client
-COPY scripts ./scripts
 RUN npm install --workspaces --include-workspace-root
 # Cards (PNGs + manifest.json) are committed under client/public/cards/.
 # Do NOT regenerate here or they will be overwritten with placeholder SVGs.
