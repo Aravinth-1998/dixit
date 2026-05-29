@@ -6,11 +6,14 @@ import {
   MIN_WIN_SCORE,
   MAX_WIN_SCORE,
   DEFAULT_WIN_SCORE,
+  DEFAULT_TIMERS,
+  MAX_PHASE_SEC,
   Phase,
   PrivateState,
   PublicPlayer,
   PublicState,
   RoundReveal,
+  TimerConfig,
 } from '../../shared/src/types.js';
 
 export interface Player {
@@ -45,6 +48,14 @@ export interface Room {
   winnerIds: string[];
   roundNumber: number;
   lastActivity: number;
+  /** Host-configured timers (seconds, 0 = off). */
+  timers: TimerConfig;
+  /** Epoch ms at which the current phase auto-advances; null = no timer. */
+  phaseDeadline: number | null;
+  /** Tokens (player.id) of kicked players — cannot rejoin. */
+  bannedTokens: string[];
+  /** Past reveals, oldest first. */
+  history: RoundReveal[];
 }
 
 function shuffle<T>(arr: T[]): T[] {
@@ -119,6 +130,10 @@ export function createRoom(
     winnerIds: [],
     roundNumber: 0,
     lastActivity: Date.now(),
+    timers: { ...DEFAULT_TIMERS },
+    phaseDeadline: null,
+    bannedTokens: [],
+    history: [],
   };
   return { room, hostToken };
 }
@@ -145,6 +160,173 @@ export function addPlayer(room: Room, name: string): string {
   return token;
 }
 
+export function isBanned(room: Room, token: string): boolean {
+  return room.bannedTokens.includes(token);
+}
+
+function clampSec(n: any): number {
+  if (typeof n !== 'number' || !Number.isFinite(n)) return 0;
+  const i = Math.floor(n);
+  if (i <= 0) return 0;
+  if (i > MAX_PHASE_SEC) return MAX_PHASE_SEC;
+  return i;
+}
+
+export function setTimers(room: Room, t: Partial<TimerConfig>) {
+  if (room.phase !== 'LOBBY') throw new Error('Timers can only change in lobby');
+  room.timers = {
+    clueSec: clampSec(t.clueSec ?? room.timers.clueSec),
+    submitSec: clampSec(t.submitSec ?? room.timers.submitSec),
+    voteSec: clampSec(t.voteSec ?? room.timers.voteSec),
+  };
+}
+
+/**
+ * Promote the first still-present, connected player to host if the current
+ * host is missing or disconnected. Returns true if the host changed.
+ */
+export function promoteHostIfNeeded(room: Room): boolean {
+  if (room.players.length === 0) return false;
+  const currentHost = room.players.find(p => p.isHost);
+  if (currentHost && currentHost.connected) return false;
+  // Prefer first connected player; otherwise just the first player.
+  const next =
+    room.players.find(p => p.connected) ?? room.players[0];
+  if (!next) return false;
+  if (currentHost === next) return false;
+  for (const p of room.players) p.isHost = false;
+  next.isHost = true;
+  return true;
+}
+
+/**
+ * Remove a player from the room and ban their token from rejoining.
+ * Handles all phases: in LOBBY just remove; mid-game also fixes up
+ * storyteller / submissions / votes and may end the round or match.
+ *
+ * Returns one of: 'removed' | 'roundReset' | 'matchOver'
+ */
+export function kickPlayer(
+  room: Room,
+  playerId: string
+): 'removed' | 'roundReset' | 'matchOver' {
+  const idx = room.players.findIndex(p => p.id === playerId);
+  if (idx === -1) throw new Error('Player not in room');
+  const target = room.players[idx];
+  if (target.isHost) throw new Error('Host cannot kick themselves');
+  const wasStoryteller =
+    room.phase !== 'LOBBY' &&
+    room.phase !== 'GAME_OVER' &&
+    room.players[room.storytellerIdx]?.id === playerId;
+
+  // Remove from roster + ban token
+  room.players.splice(idx, 1);
+  if (!room.bannedTokens.includes(playerId)) room.bannedTokens.push(playerId);
+  // Drop any state references to them
+  room.submissions.delete(playerId);
+  room.votes.delete(playerId);
+
+  // LOBBY / GAME_OVER: nothing else to do
+  if (room.phase === 'LOBBY' || room.phase === 'GAME_OVER') {
+    promoteHostIfNeeded(room);
+    return 'removed';
+  }
+
+  // Mid-game: if we no longer have enough players, end the match.
+  if (room.players.length < MIN_PLAYERS) {
+    const max = Math.max(0, ...room.players.map(p => p.score));
+    room.winnerIds = room.players
+      .filter(p => p.score === max && max > 0)
+      .map(p => p.id);
+    room.phase = 'GAME_OVER';
+    room.phaseDeadline = null;
+    promoteHostIfNeeded(room);
+    return 'matchOver';
+  }
+
+  // Keep storytellerIdx pointing at a valid player
+  if (wasStoryteller) {
+    // Round can't continue without the storyteller — restart this round
+    // with the next player as storyteller.
+    if (room.storytellerIdx >= room.players.length) room.storytellerIdx = 0;
+    // The deck/hands are kept; just begin a new clue phase.
+    beginClue(room);
+    promoteHostIfNeeded(room);
+    return 'roundReset';
+  } else {
+    // If we removed someone before storytellerIdx, the index slid up by one.
+    if (idx < room.storytellerIdx) room.storytellerIdx -= 1;
+    if (room.storytellerIdx >= room.players.length) room.storytellerIdx = 0;
+  }
+
+  // If we were waiting on the kicked player to submit/vote, the phase may now
+  // be complete. Re-check the transitions.
+  if (room.phase === 'SUBMIT') {
+    if (room.submissions.size === room.players.length) {
+      room.tableOrder = shuffle([...room.submissions.values()]);
+      room.phase = 'VOTE';
+    }
+  } else if (room.phase === 'VOTE') {
+    const nonStorytellers = room.players.length - 1;
+    if (room.votes.size === nonStorytellers) {
+      computeReveal(room);
+    }
+  }
+
+  promoteHostIfNeeded(room);
+  return 'removed';
+}
+
+// ---------- Timer-expiry auto-actions ----------
+
+function pickRandom<T>(arr: T[]): T {
+  return arr[Math.floor(Math.random() * arr.length)];
+}
+
+/** CLUE expired: storyteller didn't act — pick a random card + filler clue. */
+export function expireClue(room: Room): boolean {
+  if (room.phase !== 'CLUE') return false;
+  const st = room.players[room.storytellerIdx];
+  if (!st || st.hand.length === 0) return false;
+  const cardId = pickRandom(st.hand);
+  submitClue(room, st.id, cardId, '…');
+  return true;
+}
+
+/** SUBMIT expired: any non-submitter gets a random card from their hand. */
+export function expireSubmit(room: Room): boolean {
+  if (room.phase !== 'SUBMIT') return false;
+  for (const p of room.players) {
+    if (room.submissions.has(p.id)) continue;
+    if (p.hand.length === 0) continue;
+    try {
+      submitCard(room, p.id, pickRandom(p.hand));
+    } catch {
+      /* ignore */
+    }
+  }
+  return true;
+}
+
+/** VOTE expired: any non-voter votes for a random card that isn't theirs. */
+export function expireVote(room: Room): boolean {
+  if (room.phase !== 'VOTE') return false;
+  const storyteller = room.players[room.storytellerIdx];
+  for (const p of room.players) {
+    if (p.id === storyteller?.id) continue;
+    if (room.votes.has(p.id)) continue;
+    const myCard = room.submissions.get(p.id);
+    const choices = room.tableOrder.filter(c => c !== myCard);
+    if (choices.length === 0) continue;
+    try {
+      submitVote(room, p.id, pickRandom(choices));
+    } catch {
+      /* ignore */
+    }
+  }
+  return true;
+}
+
 export function startGame(room: Room, allCardIds: string[]) {
   if (room.phase !== 'LOBBY') throw new Error('Game already started');
   if (room.players.length !== room.maxPlayers)
@@ -169,6 +351,7 @@ function beginClue(room: Room) {
   room.votes.clear();
   room.tableOrder = [];
   room.reveal = null;
+  room.phaseDeadline = null;
   for (const p of room.players) {
     p.hasSubmitted = false;
     p.hasVoted = false;
@@ -281,8 +464,11 @@ function computeReveal(room: Room) {
       voterIds: votersByCard.get(cid) ?? [],
     })),
     deltas,
+    roundNumber: room.roundNumber,
   };
+  room.history.push(room.reveal);
   room.phase = 'REVEAL';
+  room.phaseDeadline = null;
 }
 
 export function nextRound(room: Room) {
@@ -327,6 +513,8 @@ export function newMatch(room: Room, allCardIds: string[]) {
   room.reveal = null;
   room.winnerIds = [];
   room.roundNumber = 0;
+  room.phaseDeadline = null;
+  room.history = [];
   for (const p of room.players) {
     p.hand = [];
     p.score = 0;
@@ -379,6 +567,9 @@ export function publicState(room: Room): PublicState {
     winnerIds: room.winnerIds,
     roundNumber: room.roundNumber,
     deckRemaining: room.deck.length,
+    timers: room.timers,
+    phaseDeadline: room.phaseDeadline,
+    history: room.history,
   };
 }
 

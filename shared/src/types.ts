@@ -31,7 +31,23 @@ export interface RoundReveal {
   }[];
   // Score delta this round, by playerId
   deltas: Record<string, number>;
+  /** 1-based round number this reveal corresponds to. */
+  roundNumber?: number;
 }
+
+/** Per-phase auto-expire timers (seconds). 0 disables that phase's timer. */
+export interface TimerConfig {
+  clueSec: number;
+  submitSec: number;
+  voteSec: number;
+}
+
+export const DEFAULT_TIMERS: TimerConfig = {
+  clueSec: 0,
+  submitSec: 0,
+  voteSec: 0,
+};
+export const MAX_PHASE_SEC = 300; // 5 min cap per phase
 
 export interface PublicState {
   code: string;
@@ -47,6 +63,12 @@ export interface PublicState {
   winnerIds: string[];      // populated in GAME_OVER
   roundNumber: number;
   deckRemaining: number;
+  /** Per-phase timer config (host-controlled). */
+  timers: TimerConfig;
+  /** When the current phase auto-advances (epoch ms). null = no timer. */
+  phaseDeadline: number | null;
+  /** Completed rounds, oldest first. */
+  history: RoundReveal[];
 }
 
 // Private per-player view (adds your hand + your token info)
@@ -91,6 +113,16 @@ export interface ClientToServer {
   ) => void;
   nextRound: (p: { code: string }, cb: (res: Result<{}>) => void) => void;
   newMatch: (p: { code: string }, cb: (res: Result<{}>) => void) => void;
+  /** Host-only: configure per-phase auto-expire timers (lobby only). */
+  setTimers: (
+    p: { code: string; timers: TimerConfig },
+    cb: (res: Result<{}>) => void
+  ) => void;
+  /** Host-only: kick a player. They cannot rejoin this room. */
+  kickPlayer: (
+    p: { code: string; playerId: string },
+    cb: (res: Result<{}>) => void
+  ) => void;
 }
 
 export interface ServerToClient {

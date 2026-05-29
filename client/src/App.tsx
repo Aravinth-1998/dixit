@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import { socket, emit } from './socket';
-import type { PrivateState } from '../../shared/src/types.ts';
+import type { PrivateState, RoundReveal, TimerConfig } from '../../shared/src/types.ts';
 import {
   MAX_PLAYERS,
   MIN_PLAYERS,
   MIN_WIN_SCORE,
   MAX_WIN_SCORE,
   DEFAULT_WIN_SCORE,
+  MAX_PHASE_SEC,
 } from '../../shared/src/types.ts';
 import { sounds, buzz, unlockAudio } from './sounds';
 
@@ -76,7 +77,15 @@ export default function App() {
     });
     socket.on('disconnect', () => setConnected(false));
     socket.on('state', s => setState(s));
-    socket.on('error', m => setError(m));
+    socket.on('error', m => {
+      setError(m);
+      // If the server told us we've been removed, drop our saved session so
+      // we don't keep trying to rejoin.
+      if (/removed/i.test(m) || /not in room/i.test(m)) {
+        saveSession(null);
+        setState(null);
+      }
+    });
     return () => {
       socket.off('connect');
       socket.off('disconnect');
@@ -291,8 +300,9 @@ function Game({
 }) {
   return (
     <>
+      <HistoryPanel state={state} />
       <RoomBar state={state} />
-      <PlayersBar state={state} />
+      <PlayersBar state={state} setError={setError} />
       {state.phase === 'LOBBY' && <Lobby state={state} setError={setError} />}
       {state.phase === 'CLUE' && <CluePhase state={state} setError={setError} />}
       {state.phase === 'SUBMIT' && <SubmitPhase state={state} setError={setError} />}
@@ -313,6 +323,8 @@ function RoomBar({ state }: { state: PrivateState }) {
     return (
       <div className="panel row">
         <span className="pill">Round {state.roundNumber}</span>
+        <span className="spacer" />
+        <PhaseCountdown state={state} />
       </div>
     );
   }
@@ -328,10 +340,42 @@ function RoomBar({ state }: { state: PrivateState }) {
   );
 }
 
-function PlayersBar({ state }: { state: PrivateState }) {
+/** Live countdown to state.phaseDeadline (epoch ms). Shows nothing if null. */
+function PhaseCountdown({ state }: { state: PrivateState }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!state.phaseDeadline) return;
+    const t = setInterval(() => setNow(Date.now()), 500);
+    return () => clearInterval(t);
+  }, [state.phaseDeadline]);
+  if (!state.phaseDeadline) return null;
+  const secsLeft = Math.max(0, Math.ceil((state.phaseDeadline - now) / 1000));
+  const m = Math.floor(secsLeft / 60);
+  const s = secsLeft % 60;
+  const txt = m > 0 ? `${m}:${String(s).padStart(2, '0')}` : `${s}s`;
+  const cls = 'pill timer' + (secsLeft <= 10 ? ' urgent' : '');
+  return <span className={cls}>⏱️ {txt}</span>;
+}
+
+function PlayersBar({
+  state,
+  setError,
+}: {
+  state: PrivateState;
+  setError: (m: string) => void;
+}) {
   const showStoryteller =
     state.phase !== 'LOBBY' && state.phase !== 'GAME_OVER';
   const winScore = state.winScore || MAX_WIN_SCORE;
+  const iAmHost = state.you.isHost;
+  const kick = async (playerId: string, name: string) => {
+    if (!confirm(`Remove ${name} from the room? They won't be able to rejoin.`)) return;
+    try {
+      await callEmit('kickPlayer', { code: state.code, playerId });
+    } catch (e: any) {
+      setError(e.message);
+    }
+  };
   return (
     <div className="players-grid">
       {state.players.map(p => {
@@ -346,6 +390,14 @@ function PlayersBar({ state }: { state: PrivateState }) {
         if (!p.connected) cls.push('disconnected');
         if (isDone) cls.push('done');
         const pct = Math.max(0, Math.min(100, (p.score / winScore) * 100));
+        // Host can kick anyone except themselves. In mid-game, restrict to
+        // disconnected players so we don't yank an active player out of a round.
+        const canKick =
+          iAmHost &&
+          !isYou &&
+          (state.phase === 'LOBBY' ||
+            state.phase === 'GAME_OVER' ||
+            !p.connected);
         return (
           <div key={p.id} className={cls.join(' ')}>
             <div className="pcard-row">
@@ -357,6 +409,16 @@ function PlayersBar({ state }: { state: PrivateState }) {
                 <b>{p.score}</b>
                 <span className="pcard-score-target">/{winScore}</span>
               </span>
+              {canKick && (
+                <button
+                  className="pcard-kick"
+                  title={`Remove ${p.name}`}
+                  aria-label={`Remove ${p.name}`}
+                  onClick={() => kick(p.id, p.name)}
+                >
+                  ✕
+                </button>
+              )}
             </div>
             <div className="pcard-bar">
               <div className="pcard-bar-fill" style={{ width: `${pct}%` }} />
@@ -392,6 +454,7 @@ function Lobby({
         first to <b>{state.winScore}</b> points wins.
         Share the room code or invite link.
       </p>
+      {state.you.isHost && <TimerSettings state={state} setError={setError} />}
       {state.you.isHost ? (
         <button className="btn" disabled={!full} onClick={start}>
           {full ? 'Start game' : 'Waiting for players…'}
@@ -399,6 +462,195 @@ function Lobby({
       ) : (
         <p className="muted">Waiting for host to start…</p>
       )}
+    </div>
+  );
+}
+
+/** Host-only: configure per-phase auto-expire timers (seconds, 0 = off). */
+function TimerSettings({
+  state,
+  setError,
+}: {
+  state: PrivateState;
+  setError: (m: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState<TimerConfig>(state.timers);
+  const [saving, setSaving] = useState(false);
+  // Keep in sync if server pushes a different value (e.g. another host changed it).
+  useEffect(() => setDraft(state.timers), [state.timers.clueSec, state.timers.submitSec, state.timers.voteSec]);
+
+  const apply = async (next: TimerConfig) => {
+    setSaving(true);
+    try {
+      await callEmit('setTimers', { code: state.code, timers: next });
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+  const update = (k: keyof TimerConfig, v: number) => {
+    const next = { ...draft, [k]: v };
+    setDraft(next);
+    apply(next);
+  };
+  const summary = (t: TimerConfig) => {
+    const parts: string[] = [];
+    if (t.clueSec) parts.push(`clue ${t.clueSec}s`);
+    if (t.submitSec) parts.push(`submit ${t.submitSec}s`);
+    if (t.voteSec) parts.push(`vote ${t.voteSec}s`);
+    return parts.length ? parts.join(' · ') : 'off';
+  };
+
+  return (
+    <div className="timers" style={{ margin: '10px 0' }}>
+      <button
+        className="btn ghost"
+        onClick={() => setOpen(o => !o)}
+        style={{ width: '100%', justifyContent: 'space-between' }}
+      >
+        <span>⏱️ Phase timers</span>
+        <span className="muted" style={{ fontSize: 13 }}>
+          {summary(state.timers)} {open ? '▾' : '▸'}
+        </span>
+      </button>
+      {open && (
+        <div style={{ display: 'grid', gap: 12, marginTop: 10 }}>
+          <TimerSlider
+            label="Clue (storyteller)"
+            value={draft.clueSec}
+            disabled={saving}
+            onChange={v => update('clueSec', v)}
+          />
+          <TimerSlider
+            label="Submit (others pick a card)"
+            value={draft.submitSec}
+            disabled={saving}
+            onChange={v => update('submitSec', v)}
+          />
+          <TimerSlider
+            label="Vote"
+            value={draft.voteSec}
+            disabled={saving}
+            onChange={v => update('voteSec', v)}
+          />
+          <span className="muted field-hint">
+            0 = no timer. When the timer expires, anyone who hasn't acted gets a random pick.
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TimerSlider({
+  label,
+  value,
+  disabled,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  disabled?: boolean;
+  onChange: (v: number) => void;
+}) {
+  return (
+    <div className="field">
+      <span className="field-label">
+        {label}: <b>{value === 0 ? 'off' : `${value}s`}</b>
+      </span>
+      <input
+        className="slider"
+        type="range"
+        min={0}
+        max={MAX_PHASE_SEC}
+        step={5}
+        value={value}
+        disabled={disabled}
+        onChange={e => onChange(Number(e.target.value))}
+      />
+    </div>
+  );
+}
+
+// ---------- History panel (collapsed by default, at top) ----------
+function HistoryPanel({ state }: { state: PrivateState }) {
+  const [open, setOpen] = useState(false);
+  const rounds = state.history ?? [];
+  if (rounds.length === 0) return null;
+  const playerName = (id: string) =>
+    state.players.find(p => p.id === id)?.name ?? '?';
+  return (
+    <div className="history">
+      <button
+        className="history-bar"
+        onClick={() => setOpen(o => !o)}
+        aria-expanded={open}
+      >
+        <span>📜 History · {rounds.length} round{rounds.length === 1 ? '' : 's'}</span>
+        <span className="muted" style={{ fontSize: 13 }}>{open ? '▾' : '▸'}</span>
+      </button>
+      {open && (
+        <div className="history-body">
+          {[...rounds].reverse().map(r => (
+            <HistoryRound key={r.roundNumber ?? Math.random()} r={r} playerName={playerName} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function HistoryRound({
+  r,
+  playerName,
+}: {
+  r: RoundReveal;
+  playerName: (id: string) => string;
+}) {
+  const [zoom, setZoom] = useState<string | null>(null);
+  return (
+    <div className="history-round">
+      <div className="history-round-head">
+        <b>R{r.roundNumber ?? '?'}</b>
+        <span className="muted">·</span>
+        <span>🎙️ {playerName(r.storytellerId)}</span>
+        <span className="muted">·</span>
+        <span style={{ fontStyle: 'italic' }}>"{r.clue}"</span>
+      </div>
+      <div className="history-cards">
+        {r.cards.map(c => {
+          const isStory = c.cardId === r.storytellerCardId;
+          return (
+            <div
+              key={c.cardId}
+              className={'history-card' + (isStory ? ' story' : '')}
+              onClick={() => setZoom(c.cardId)}
+              title={`${playerName(c.ownerId)}${c.voterIds.length ? ' · voted by ' + c.voterIds.map(playerName).join(', ') : ''}`}
+            >
+              <img src={cardUrl(c.cardId)} alt="" />
+              <div className="history-card-cap">
+                {playerName(c.ownerId)}
+                {c.voterIds.length > 0 && (
+                  <span className="muted"> · {c.voterIds.length}</span>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <div className="history-deltas">
+        {Object.entries(r.deltas)
+          .filter(([, d]) => d > 0)
+          .sort((a, b) => b[1] - a[1])
+          .map(([pid, d]) => (
+            <span key={pid} className="pill" style={{ fontSize: 12 }}>
+              {playerName(pid)} +{d}
+            </span>
+          ))}
+      </div>
+      <CardZoom cardId={zoom} onClose={() => setZoom(null)} />
     </div>
   );
 }

@@ -16,10 +16,17 @@ import {
 import {
   addPlayer,
   createRoom,
+  expireClue,
+  expireSubmit,
+  expireVote,
+  isBanned,
+  kickPlayer,
   newMatch,
   nextRound,
   privateState,
+  promoteHostIfNeeded,
   Room,
+  setTimers,
   startGame,
   submitCard,
   submitClue,
@@ -75,8 +82,55 @@ if (existsSync(clientDist)) {
 }
 
 // ---------- Helpers ----------
+const phaseTimers = new Map<string, NodeJS.Timeout>();
+
+/** Cancel any pending auto-expire for this room. */
+function clearPhaseTimer(code: string) {
+  const t = phaseTimers.get(code);
+  if (t) {
+    clearTimeout(t);
+    phaseTimers.delete(code);
+  }
+}
+
+/**
+ * Look at the room's current phase + configured timers. If the phase
+ * supports an auto-expire and one is configured, set room.phaseDeadline and
+ * schedule a timeout that fires the appropriate expire helper and rebroadcasts.
+ * Idempotent: clears any existing scheduled timer first.
+ */
+function scheduleAutoExpire(room: Room) {
+  clearPhaseTimer(room.code);
+  let sec = 0;
+  if (room.phase === 'CLUE') sec = room.timers.clueSec;
+  else if (room.phase === 'SUBMIT') sec = room.timers.submitSec;
+  else if (room.phase === 'VOTE') sec = room.timers.voteSec;
+  if (!sec || sec <= 0) {
+    room.phaseDeadline = null;
+    return;
+  }
+  room.phaseDeadline = Date.now() + sec * 1000;
+  const timer = setTimeout(() => {
+    phaseTimers.delete(room.code);
+    try {
+      if (room.phase === 'CLUE') expireClue(room);
+      else if (room.phase === 'SUBMIT') expireSubmit(room);
+      else if (room.phase === 'VOTE') expireVote(room);
+    } catch (e) {
+      console.warn('Auto-expire failed', e);
+    }
+    broadcast(room);
+  }, sec * 1000);
+  timer.unref?.();
+  phaseTimers.set(room.code, timer);
+}
+
 function broadcast(room: Room) {
   touch(room);
+  // (Re)evaluate the auto-expire timer based on the room's current phase.
+  // We do this here so every code path that mutates state + broadcasts
+  // automatically keeps the schedule in sync.
+  scheduleAutoExpire(room);
   for (const p of room.players) {
     if (!p.socketId) continue;
     io.to(p.socketId).emit('state', privateState(room, p.id));
@@ -151,6 +205,7 @@ io.on('connection', socket => {
     try {
       const room = getRoom(code);
       if (!room) return cb(err('Room not found'));
+      if (isBanned(room, token)) return cb(err('You were removed from this room'));
       const player = room.players.find(p => p.id === token);
       if (!player) return cb(err('Player not in room'));
       player.socketId = socket.id;
@@ -173,14 +228,19 @@ io.on('connection', socket => {
       const [removed] = room.players.splice(idx, 1);
       // If host left, promote next; if empty, delete room.
       if (room.players.length === 0) {
+        clearPhaseTimer(room.code);
         deleteRoom(room.code);
         return;
       }
       if (removed.isHost) room.players[0].isHost = true;
     } else {
-      // mid-game: just mark disconnected
+      // mid-game: just mark disconnected; promote a new host if needed
       room.players[idx].connected = false;
       room.players[idx].socketId = null;
+      if (room.players[idx].isHost) {
+        room.players[idx].isHost = false;
+        promoteHostIfNeeded(room);
+      }
     }
     socketIndex.delete(socket.id);
     broadcast(room);
@@ -240,6 +300,34 @@ io.on('connection', socket => {
     })
   );
 
+  socket.on('setTimers', ({ code, timers }, cb) =>
+    withRoom(code, cb, (room, pid) => {
+      const player = room.players.find(p => p.id === pid);
+      if (!player?.isHost) throw new Error('Only host can set timers');
+      setTimers(room, timers || {});
+    })
+  );
+
+  socket.on('kickPlayer', ({ code, playerId }, cb) =>
+    withRoom(code, cb, (room, pid) => {
+      const player = room.players.find(p => p.id === pid);
+      if (!player?.isHost) throw new Error('Only host can kick');
+      if (playerId === pid) throw new Error('Host cannot kick themselves');
+      // Disconnect their socket if any
+      const target = room.players.find(p => p.id === playerId);
+      const targetSocketId = target?.socketId ?? null;
+      kickPlayer(room, playerId);
+      if (targetSocketId) {
+        socketIndex.delete(targetSocketId);
+        const sock = io.sockets.sockets.get(targetSocketId);
+        if (sock) {
+          sock.emit('error', 'You were removed from the room by the host');
+          sock.leave(room.code);
+        }
+      }
+    })
+  );
+
   socket.on('disconnect', () => {
     const idx = socketIndex.get(socket.id);
     if (!idx) return;
@@ -254,6 +342,7 @@ io.on('connection', socket => {
       const wasHost = player.isHost;
       room.players.splice(i, 1);
       if (room.players.length === 0) {
+        clearPhaseTimer(room.code);
         deleteRoom(room.code);
         return;
       }
@@ -261,6 +350,12 @@ io.on('connection', socket => {
     } else {
       player.connected = false;
       player.socketId = null;
+      // If the host just dropped mid-game, promote the next connected
+      // player so the game can keep advancing.
+      if (player.isHost) {
+        player.isHost = false;
+        promoteHostIfNeeded(room);
+      }
     }
     broadcast(room);
   });
