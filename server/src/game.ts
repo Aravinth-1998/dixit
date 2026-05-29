@@ -366,6 +366,14 @@ export function submitClue(
   cardId: string,
   clue: string
 ) {
+  // Idempotent: if a slightly delayed duplicate request lands after we've
+  // already advanced to SUBMIT, silently no-op when it's the same storyteller
+  // sending the same card.
+  if (
+    room.phase === 'SUBMIT' &&
+    room.players[room.storytellerIdx]?.id === playerId &&
+    room.storytellerCardId === cardId
+  ) return;
   if (room.phase !== 'CLUE') throw new Error('Not clue phase');
   const storyteller = room.players[room.storytellerIdx];
   if (storyteller.id !== playerId) throw new Error('Only storyteller can give a clue');
@@ -381,12 +389,21 @@ export function submitClue(
 }
 
 export function submitCard(room: Room, playerId: string, cardId: string) {
-  if (room.phase !== 'SUBMIT') throw new Error('Not submit phase');
+  if (room.phase !== 'SUBMIT' && room.phase !== 'VOTE') {
+    throw new Error('Not submit phase');
+  }
   const player = room.players.find(p => p.id === playerId);
   if (!player) throw new Error('Unknown player');
   const storyteller = room.players[room.storytellerIdx];
   if (player.id === storyteller.id) throw new Error('Storyteller already submitted');
-  if (room.submissions.has(player.id)) throw new Error('Already submitted');
+  // Idempotent: if the same player already submitted the same card (e.g.
+  // double-tap or retry after a flaky network), silently succeed.
+  const existing = room.submissions.get(player.id);
+  if (existing !== undefined) {
+    if (existing === cardId) return;
+    throw new Error('Already submitted');
+  }
+  if (room.phase !== 'SUBMIT') throw new Error('Submission window closed');
   if (!player.hand.includes(cardId)) throw new Error('Card not in hand');
   room.submissions.set(player.id, cardId);
   player.hand = player.hand.filter(c => c !== cardId);
@@ -399,12 +416,20 @@ export function submitCard(room: Room, playerId: string, cardId: string) {
 }
 
 export function submitVote(room: Room, playerId: string, cardId: string) {
-  if (room.phase !== 'VOTE') throw new Error('Not vote phase');
+  if (room.phase !== 'VOTE' && room.phase !== 'REVEAL') {
+    throw new Error('Not vote phase');
+  }
   const player = room.players.find(p => p.id === playerId);
   if (!player) throw new Error('Unknown player');
   const storyteller = room.players[room.storytellerIdx];
   if (player.id === storyteller.id) throw new Error('Storyteller cannot vote');
-  if (room.votes.has(player.id)) throw new Error('Already voted');
+  // Idempotent: same player voting for the same card again → no-op.
+  const existing = room.votes.get(player.id);
+  if (existing !== undefined) {
+    if (existing === cardId) return;
+    throw new Error('Already voted');
+  }
+  if (room.phase !== 'VOTE') throw new Error('Voting window closed');
   if (!room.tableOrder.includes(cardId)) throw new Error('Card not on table');
   // Can't vote for your own card
   if (room.submissions.get(player.id) === cardId)

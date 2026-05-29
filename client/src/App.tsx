@@ -86,10 +86,24 @@ function cardUrl(id: string) {
   return `/cards/${id}.${ext}`;
 }
 
+/** Force the browser to fetch & cache card images so they don't pop in later. */
+const preloadCache = new Set<string>();
+function preloadCards(ids: Iterable<string>) {
+  for (const id of ids) {
+    if (preloadCache.has(id)) continue;
+    preloadCache.add(id);
+    const img = new Image();
+    img.decoding = 'async';
+    img.loading = 'eager';
+    img.src = cardUrl(id);
+  }
+}
+
 export default function App() {
   const [state, setState] = useState<PrivateState | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [connected, setConnected] = useState(socket.connected);
+  const [reconnAttempt, setReconnAttempt] = useState(0);
   const { info, dismissInfo } = useGameAlerts(state);
 
   // Unlock WebAudio on the very first user gesture (required by Safari/iOS).
@@ -110,6 +124,7 @@ export default function App() {
   useEffect(() => {
     socket.on('connect', () => {
       setConnected(true);
+      setReconnAttempt(0);
       const saved = loadSaved();
       if (saved) {
         socket.emit('rejoin', saved, (res: any) => {
@@ -121,6 +136,14 @@ export default function App() {
       }
     });
     socket.on('disconnect', () => setConnected(false));
+    socket.io.on('reconnect_attempt', (n: number) => {
+      setConnected(false);
+      setReconnAttempt(n);
+    });
+    socket.io.on('reconnect', () => {
+      setConnected(true);
+      setReconnAttempt(0);
+    });
     socket.on('state', s => setState(s));
     socket.on('error', m => {
       setError(m);
@@ -136,6 +159,8 @@ export default function App() {
       socket.off('disconnect');
       socket.off('state');
       socket.off('error');
+      socket.io.off('reconnect_attempt');
+      socket.io.off('reconnect');
     };
   }, []);
 
@@ -144,6 +169,19 @@ export default function App() {
     const t = setTimeout(() => setError(null), 3500);
     return () => clearTimeout(t);
   }, [error]);
+
+  // Preload all card images currently visible to this client (hand, table,
+  // reveal cards, history thumbnails) so they're cached before we render
+  // them at a different size or in a flip animation.
+  useEffect(() => {
+    if (!state) return;
+    const ids = new Set<string>();
+    state.you.hand.forEach(id => ids.add(id));
+    state.table.forEach(c => ids.add(c.cardId));
+    state.reveal?.cards.forEach(c => ids.add(c.cardId));
+    state.history.forEach(r => r.cards.forEach(c => ids.add(c.cardId)));
+    preloadCards(ids);
+  }, [state]);
 
   const onLeave = () => {
     if (state) emit('leaveRoom', { code: state.code });
@@ -161,8 +199,19 @@ export default function App() {
             Leave
           </button>
         )}
-        {!connected && <span className="pill" style={{ color: 'var(--warn)' }}>Offline</span>}
+        {!connected && !state && (
+          <span className="pill" style={{ color: 'var(--warn)' }}>Offline</span>
+        )}
       </header>
+
+      {!connected && state && (
+        <div className="reconnect-banner">
+          <span className="spinner" />
+          <span>
+            Reconnecting{reconnAttempt > 0 ? ` (attempt ${reconnAttempt})` : ''}…
+          </span>
+        </div>
+      )}
 
       {!state && <Home onJoined={s => saveSession(s)} setError={setError} />}
       {state && <Game state={state} setError={setError} />}
@@ -695,6 +744,7 @@ function CluePhase({
 }) {
   const [picked, setPicked] = useState<string | null>(null);
   const [clue, setClue] = useState('');
+  const [busy, setBusy] = useState(false);
   const storyteller = state.players.find(p => p.id === state.storytellerId);
 
   if (!state.you.isStoryteller) {
@@ -708,11 +758,13 @@ function CluePhase({
   }
 
   const submit = async () => {
-    if (!picked || !clue.trim()) return;
+    if (!picked || !clue.trim() || busy) return;
+    setBusy(true);
     try {
       await callEmit('submitClue', { code: state.code, cardId: picked, clue });
     } catch (e: any) {
       setError(e.message);
+      setBusy(false);
     }
   };
 
@@ -729,8 +781,8 @@ function CluePhase({
           placeholder="Your clue…"
           onChange={e => setClue(e.target.value)}
         />
-        <button className="btn" disabled={!picked || !clue.trim()} onClick={submit}>
-          Give clue
+        <button className="btn" disabled={!picked || !clue.trim() || busy} onClick={submit}>
+          {busy ? 'Sending…' : 'Give clue'}
         </button>
       </div>
     </div>
@@ -746,15 +798,19 @@ function SubmitPhase({
   setError: (m: string) => void;
 }) {
   const [picked, setPicked] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
   const me = state.players.find(p => p.id === state.you.id)!;
 
   const submit = async () => {
-    if (!picked) return;
+    if (!picked || busy) return;
+    setBusy(true);
     try {
       await callEmit('submitCard', { code: state.code, cardId: picked });
       setPicked(null);
     } catch (e: any) {
       setError(e.message);
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -772,10 +828,10 @@ function SubmitPhase({
           <button
             className="btn"
             style={{ marginTop: 12 }}
-            disabled={!picked}
+            disabled={!picked || busy}
             onClick={submit}
           >
-            Submit card
+            {busy ? 'Sending…' : 'Submit card'}
           </button>
         </>
       )}
@@ -793,17 +849,21 @@ function VotePhase({
 }) {
   const [picked, setPicked] = useState<string | null>(null);
   const [zoom, setZoom] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
   const me = state.players.find(p => p.id === state.you.id)!;
   // The card I submitted is on the table; I can't vote it.
   const myOwnCard = state.you.isStoryteller ? null : findMyCardOnTable(state);
 
   const submit = async () => {
-    if (!picked) return;
+    if (!picked || busy) return;
+    setBusy(true);
     try {
       await callEmit('submitVote', { code: state.code, cardId: picked });
       setPicked(null);
     } catch (e: any) {
       setError(e.message);
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -853,10 +913,10 @@ function VotePhase({
         <button
           className="btn"
           style={{ marginTop: 12 }}
-          disabled={!picked}
+          disabled={!picked || busy}
           onClick={submit}
         >
-          Cast vote
+          {busy ? 'Sending…' : 'Cast vote'}
         </button>
       )}
       <CardZoom cardId={zoom} onClose={() => setZoom(null)} />

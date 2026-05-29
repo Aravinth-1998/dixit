@@ -599,3 +599,32 @@ input[type=text], input[type=number] {
   justify-content: center;
   gap: 4px;
 }
+
+/* Reconnect banner — shown when the socket drops mid-game */
+.reconnect-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: rgba(245, 158, 11, 0.18);
+  border: 1px solid var(--warn);
+  color: var(--warn);
+  padding: 10px 14px;
+  border-radius: 12px;
+  font-weight: 600;
+  font-size: 14px;
+  margin: 8px 0;
+  animation: toastIn 0.2s ease-out;
+}
+.spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  flex-shrink: 0;
+}
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
