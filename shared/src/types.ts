@@ -86,7 +86,7 @@ export interface PrivateState extends PublicState {
 
 export interface ClientToServer {
   createRoom: (
-    p: { hostName: string; maxPlayers: number; winScore?: number },
+    p: { hostName: string; maxPlayers: number; winScore?: number; timers?: TimerConfig },
     cb: (res: Result<{ code: string; token: string }>) => void
   ) => void;
   joinRoom: (

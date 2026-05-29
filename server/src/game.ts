@@ -87,7 +87,8 @@ export function createRoom(
   hostName: string,
   maxPlayers: number,
   allCardIds: string[],
-  winScore: number = DEFAULT_WIN_SCORE
+  winScore: number = DEFAULT_WIN_SCORE,
+  timers?: Partial<TimerConfig>,
 ): { room: Room; hostToken: string } {
   if (maxPlayers < MIN_PLAYERS || maxPlayers > MAX_PLAYERS) {
     throw new Error(`Player count must be ${MIN_PLAYERS}-${MAX_PLAYERS}`);
@@ -135,6 +136,7 @@ export function createRoom(
     bannedTokens: [],
     history: [],
   };
+  if (timers) setTimers(room, timers);
   return { room, hostToken };
 }
 

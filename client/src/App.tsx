@@ -8,6 +8,7 @@ import {
   MAX_WIN_SCORE,
   DEFAULT_WIN_SCORE,
   MAX_PHASE_SEC,
+  DEFAULT_TIMERS,
 } from '../../shared/src/types.ts';
 import { sounds, buzz, unlockAudio } from './sounds';
 
@@ -145,6 +146,8 @@ function Home({
   const [code, setCode] = useState('');
   const [maxPlayers, setMaxPlayers] = useState(4);
   const [winScore, setWinScore] = useState<number>(DEFAULT_WIN_SCORE);
+  const [timers, setTimers] = useState<TimerConfig>({ ...DEFAULT_TIMERS });
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const [busy, setBusy] = useState(false);
 
   // pre-fill code from URL ?room=XXXX
@@ -164,6 +167,7 @@ function Home({
         hostName: name,
         maxPlayers,
         winScore,
+        timers,
       });
       onJoined({ code: r.code, token: r.token });
     } catch (e: any) {
@@ -250,6 +254,43 @@ function Home({
                 onChange={e => setWinScore(Number(e.target.value))}
               />
               <span className="muted field-hint">({MIN_WIN_SCORE}–{MAX_WIN_SCORE})</span>
+            </div>
+
+            <div>
+              <button
+                type="button"
+                className="btn ghost"
+                onClick={() => setShowAdvanced(v => !v)}
+                style={{ width: '100%', justifyContent: 'space-between' }}
+              >
+                <span>⚙️ Advanced options</span>
+                <span className="muted" style={{ fontSize: 13 }}>
+                  {timerSummary(timers)} {showAdvanced ? '▾' : '▸'}
+                </span>
+              </button>
+              {showAdvanced && (
+                <div style={{ display: 'grid', gap: 12, marginTop: 12 }}>
+                  <p className="muted field-hint" style={{ textAlign: 'center', margin: 0 }}>
+                    Per-phase timers. 0 = off. If a player doesn't act in time,
+                    a random pick is made for them.
+                  </p>
+                  <TimerSlider
+                    label="Clue (storyteller)"
+                    value={timers.clueSec}
+                    onChange={v => setTimers(t => ({ ...t, clueSec: v }))}
+                  />
+                  <TimerSlider
+                    label="Submit (others pick a card)"
+                    value={timers.submitSec}
+                    onChange={v => setTimers(t => ({ ...t, submitSec: v }))}
+                  />
+                  <TimerSlider
+                    label="Vote"
+                    value={timers.voteSec}
+                    onChange={v => setTimers(t => ({ ...t, voteSec: v }))}
+                  />
+                </div>
+              )}
             </div>
           </>
         ) : (
@@ -454,7 +495,6 @@ function Lobby({
         first to <b>{state.winScore}</b> points wins.
         Share the room code or invite link.
       </p>
-      {state.you.isHost && <TimerSettings state={state} setError={setError} />}
       {state.you.isHost ? (
         <button className="btn" disabled={!full} onClick={start}>
           {full ? 'Start game' : 'Waiting for players…'}
@@ -466,84 +506,15 @@ function Lobby({
   );
 }
 
-/** Host-only: configure per-phase auto-expire timers (seconds, 0 = off). */
-function TimerSettings({
-  state,
-  setError,
-}: {
-  state: PrivateState;
-  setError: (m: string) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const [draft, setDraft] = useState<TimerConfig>(state.timers);
-  const [saving, setSaving] = useState(false);
-  // Keep in sync if server pushes a different value (e.g. another host changed it).
-  useEffect(() => setDraft(state.timers), [state.timers.clueSec, state.timers.submitSec, state.timers.voteSec]);
-
-  const apply = async (next: TimerConfig) => {
-    setSaving(true);
-    try {
-      await callEmit('setTimers', { code: state.code, timers: next });
-    } catch (e: any) {
-      setError(e.message);
-    } finally {
-      setSaving(false);
-    }
-  };
-  const update = (k: keyof TimerConfig, v: number) => {
-    const next = { ...draft, [k]: v };
-    setDraft(next);
-    apply(next);
-  };
-  const summary = (t: TimerConfig) => {
-    const parts: string[] = [];
-    if (t.clueSec) parts.push(`clue ${t.clueSec}s`);
-    if (t.submitSec) parts.push(`submit ${t.submitSec}s`);
-    if (t.voteSec) parts.push(`vote ${t.voteSec}s`);
-    return parts.length ? parts.join(' · ') : 'off';
-  };
-
-  return (
-    <div className="timers" style={{ margin: '10px 0' }}>
-      <button
-        className="btn ghost"
-        onClick={() => setOpen(o => !o)}
-        style={{ width: '100%', justifyContent: 'space-between' }}
-      >
-        <span>⏱️ Phase timers</span>
-        <span className="muted" style={{ fontSize: 13 }}>
-          {summary(state.timers)} {open ? '▾' : '▸'}
-        </span>
-      </button>
-      {open && (
-        <div style={{ display: 'grid', gap: 12, marginTop: 10 }}>
-          <TimerSlider
-            label="Clue (storyteller)"
-            value={draft.clueSec}
-            disabled={saving}
-            onChange={v => update('clueSec', v)}
-          />
-          <TimerSlider
-            label="Submit (others pick a card)"
-            value={draft.submitSec}
-            disabled={saving}
-            onChange={v => update('submitSec', v)}
-          />
-          <TimerSlider
-            label="Vote"
-            value={draft.voteSec}
-            disabled={saving}
-            onChange={v => update('voteSec', v)}
-          />
-          <span className="muted field-hint">
-            0 = no timer. When the timer expires, anyone who hasn't acted gets a random pick.
-          </span>
-        </div>
-      )}
-    </div>
-  );
+function timerSummary(t: TimerConfig): string {
+  const parts: string[] = [];
+  if (t.clueSec) parts.push(`clue ${t.clueSec}s`);
+  if (t.submitSec) parts.push(`submit ${t.submitSec}s`);
+  if (t.voteSec) parts.push(`vote ${t.voteSec}s`);
+  return parts.length ? parts.join(' · ') : 'off';
 }
 
+/** Host-only timer slider (used in the create-room form). */
 function TimerSlider({
   label,
   value,
@@ -1098,6 +1069,29 @@ function useGameAlerts(state: PrivateState | null) {
     const t = setTimeout(() => setInfo(null), 5000);
     return () => clearTimeout(t);
   }, [info]);
+
+  // Periodic gentle buzz while it's the local player's turn to do something.
+  // Fires every 5s until the phase advances or the player acts.
+  useEffect(() => {
+    if (!state) return;
+    const me = state.players.find(p => p.id === state.you.id);
+    if (!me) return;
+    let needsAction = false;
+    if (state.phase === 'CLUE' && state.you.isStoryteller) needsAction = true;
+    else if (state.phase === 'SUBMIT' && !state.you.isStoryteller && !me.hasSubmitted) needsAction = true;
+    else if (state.phase === 'VOTE' && !state.you.isStoryteller && !me.hasVoted) needsAction = true;
+    if (!needsAction) return;
+    const id = setInterval(() => buzz(60), 5000);
+    return () => clearInterval(id);
+  }, [
+    state?.phase,
+    state?.roundNumber,
+    state?.you?.id,
+    state?.you?.isStoryteller,
+    // re-evaluate when our hasSubmitted / hasVoted flips
+    state?.players.find(p => p.id === state?.you?.id)?.hasSubmitted,
+    state?.players.find(p => p.id === state?.you?.id)?.hasVoted,
+  ]);
 
   return { info, dismissInfo: () => setInfo(null) };
 }

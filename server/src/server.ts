@@ -152,7 +152,7 @@ function attach(socketId: string, code: string, token: string) {
 }
 
 io.on('connection', socket => {
-  socket.on('createRoom', ({ hostName, maxPlayers, winScore }, cb) => {
+  socket.on('createRoom', ({ hostName, maxPlayers, winScore, timers }, cb) => {
     try {
       if (typeof hostName !== 'string' || !hostName.trim())
         return cb(err('Name is required'));
@@ -173,7 +173,9 @@ io.on('connection', socket => {
       if (CARD_IDS.length < maxPlayers * 6 + 10)
         return cb(err('Not enough cards on server'));
       const code = generateCode();
-      const { room, hostToken } = createRoom(code, hostName, maxPlayers, CARD_IDS, ws);
+      const { room, hostToken } = createRoom(
+        code, hostName, maxPlayers, CARD_IDS, ws, timers,
+      );
       room.players[0].socketId = socket.id;
       putRoom(room);
       socket.join(code);
