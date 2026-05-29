@@ -251,6 +251,13 @@ export function kickPlayer(
     // Round can't continue without the storyteller — restart this round
     // with the next player as storyteller.
     if (room.storytellerIdx >= room.players.length) room.storytellerIdx = 0;
+    // Return any cards that the remaining non-storytellers already submitted
+    // this round back to their hands, so they aren't silently lost when the
+    // round is abandoned.
+    for (const [pid, cardId] of room.submissions.entries()) {
+      const p = room.players.find(pp => pp.id === pid);
+      if (p && !p.hand.includes(cardId)) p.hand.push(cardId);
+    }
     // The deck/hands are kept; just begin a new clue phase.
     beginClue(room);
     promoteHostIfNeeded(room);

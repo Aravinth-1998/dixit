@@ -12,10 +12,12 @@
     "dev:client": "npm --workspace client run dev",
     "dev": "concurrently -n server,client -c blue,green \"npm:dev:server\" \"npm:dev:client\"",
     "build": "npm --workspace shared run build && npm --workspace client run build && npm --workspace server run build",
-    "start": "node server/dist/server/src/server.js"
+    "start": "node server/dist/server/src/server.js",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "devDependencies": {
-    "concurrently": "^9.0.1"
+    "concurrently": "^9.0.1",
+    "vitest": "^4.1.7"
   }
 }
-
