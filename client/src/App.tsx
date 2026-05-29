@@ -284,6 +284,16 @@ function Game({
 function RoomBar({ state }: { state: PrivateState }) {
   const link = `${location.origin}/?room=${state.code}`;
   const copy = () => navigator.clipboard?.writeText(link);
+  // Hide the room code / invite link once the match is in progress —
+  // it's only useful for joining (LOBBY) or for the next match (GAME_OVER).
+  const showCode = state.phase === 'LOBBY' || state.phase === 'GAME_OVER';
+  if (!showCode) {
+    return (
+      <div className="panel row">
+        <span className="pill">Round {state.roundNumber}</span>
+      </div>
+    );
+  }
   return (
     <div className="panel row">
       <div>
@@ -292,9 +302,6 @@ function RoomBar({ state }: { state: PrivateState }) {
       </div>
       <span className="spacer" />
       <button className="btn ghost" onClick={copy}>Copy invite link</button>
-      {state.phase !== 'LOBBY' && state.phase !== 'GAME_OVER' && (
-        <span className="pill">Round {state.roundNumber}</span>
-      )}
     </div>
   );
 }
