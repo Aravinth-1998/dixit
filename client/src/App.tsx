@@ -290,7 +290,7 @@ function Home({
         <p className="muted">
           A storytelling party game. Pick a card, give a clue, and try to read your friends' minds.
         </p>
-        <div className="row">
+        <div className="row" style={{ justifyContent: 'center' }}>
           <button className="btn" onClick={() => setMode('create')}>Create room</button>
           <button className="btn secondary" onClick={() => setMode('join')}>Join room</button>
         </div>
