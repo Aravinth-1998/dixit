@@ -1,0 +1,13 @@
+node_modules
+**/node_modules
+**/dist
+.git
+.gitignore
+*.log
+fetch.log
+.DS_Store
+client/tsconfig.tsbuildinfo
+client/public/cards-original
+client/public/preview-a.html
+client/public/preview-b.html
+
