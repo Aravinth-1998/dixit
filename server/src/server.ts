@@ -12,6 +12,7 @@ import {
   MIN_WIN_SCORE,
   MAX_WIN_SCORE,
   DEFAULT_WIN_SCORE,
+  ALLOWED_REACTIONS,
 } from '../../shared/src/types.js';
 import {
   addPlayer,
@@ -329,6 +330,27 @@ io.on('connection', socket => {
       }
     })
   );
+
+  // Lightweight broadcast — does not mutate room state, no rebroadcast needed.
+  socket.on('react', ({ code, emoji }, cb) => {
+    try {
+      const idx = socketIndex.get(socket.id);
+      if (!idx || idx.code !== code.toUpperCase())
+        return cb(err('Not in room'));
+      if (!ALLOWED_REACTIONS.includes(emoji as any))
+        return cb(err('Unknown reaction'));
+      const room = getRoom(code);
+      if (!room) return cb(err('Room not found'));
+      io.to(room.code).emit('reaction', {
+        playerId: idx.token,
+        emoji,
+        ts: Date.now(),
+      });
+      cb(ok({}));
+    } catch (e: any) {
+      cb(err(e.message ?? 'Failed to react'));
+    }
+  });
 
   socket.on('disconnect', () => {
     const idx = socketIndex.get(socket.id);

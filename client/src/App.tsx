@@ -9,8 +9,52 @@ import {
   DEFAULT_WIN_SCORE,
   MAX_PHASE_SEC,
   DEFAULT_TIMERS,
+  ALLOWED_REACTIONS,
 } from '../../shared/src/types.ts';
 import { sounds, buzz, unlockAudio } from './sounds';
+
+// ---------- Per-player color (stable from id) ----------
+const PLAYER_COLORS = [
+  '#a855f7', '#22d3ee', '#22c55e', '#f59e0b',
+  '#ef4444', '#ec4899', '#3b82f6', '#eab308',
+  '#14b8a6', '#f97316',
+];
+function hashStr(s: string): number {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
+  return Math.abs(h);
+}
+function playerColor(id: string): string {
+  return PLAYER_COLORS[hashStr(id) % PLAYER_COLORS.length];
+}
+function playerInitial(name: string): string {
+  const trimmed = name.trim();
+  return (trimmed[0] || '?').toUpperCase();
+}
+
+function Avatar({
+  player,
+  size = 22,
+}: {
+  player: { id: string; name: string };
+  size?: number;
+}) {
+  const bg = playerColor(player.id);
+  return (
+    <span
+      className="avatar"
+      title={player.name}
+      style={{
+        background: bg,
+        width: size,
+        height: size,
+        fontSize: Math.round(size * 0.5),
+      }}
+    >
+      {playerInitial(player.name)}
+    </span>
+  );
+}
 
 type Saved = { code: string; token: string };
 const SAVE_KEY = 'dixit.session';
@@ -350,6 +394,7 @@ function Game({
       {state.phase === 'VOTE' && <VotePhase state={state} setError={setError} />}
       {state.phase === 'REVEAL' && <RevealPhase state={state} setError={setError} />}
       {state.phase === 'GAME_OVER' && <GameOver state={state} setError={setError} />}
+      <FloatingReactions state={state} />
     </>
   );
 }
@@ -442,6 +487,7 @@ function PlayersBar({
         return (
           <div key={p.id} className={cls.join(' ')}>
             <div className="pcard-row">
+              <Avatar player={p} size={22} />
               {p.isHost && <span className="pcard-role" title="Host">👑</span>}
               {isStoryteller && <span className="pcard-role" title="Storyteller">🎙️</span>}
               <span className="pcard-name" title={p.name}>{p.name}</span>
@@ -565,7 +611,12 @@ function HistoryPanel({ state }: { state: PrivateState }) {
       {open && (
         <div className="history-body">
           {[...rounds].reverse().map(r => (
-            <HistoryRound key={r.roundNumber ?? Math.random()} r={r} playerName={playerName} />
+            <HistoryRound
+              key={r.roundNumber ?? Math.random()}
+              r={r}
+              playerName={playerName}
+              players={state.players}
+            />
           ))}
         </div>
       )}
@@ -576,17 +627,25 @@ function HistoryPanel({ state }: { state: PrivateState }) {
 function HistoryRound({
   r,
   playerName,
+  players,
 }: {
   r: RoundReveal;
   playerName: (id: string) => string;
+  players: { id: string; name: string }[];
 }) {
   const [zoom, setZoom] = useState<string | null>(null);
+  const storyteller = players.find(p => p.id === r.storytellerId) ?? {
+    id: r.storytellerId,
+    name: playerName(r.storytellerId),
+  };
   return (
     <div className="history-round">
       <div className="history-round-head">
         <b>R{r.roundNumber ?? '?'}</b>
         <span className="muted">·</span>
-        <span>🎙️ {playerName(r.storytellerId)}</span>
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+          <Avatar player={storyteller} size={18} /> 🎙️ {storyteller.name}
+        </span>
         <span className="muted">·</span>
         <span style={{ fontStyle: 'italic' }}>"{r.clue}"</span>
       </div>
@@ -821,6 +880,25 @@ function RevealPhase({
 }) {
   const reveal = state.reveal!;
   const [zoom, setZoom] = useState<string | null>(null);
+  // Stagger flip-in animation on enter.
+  const [flippedSet, setFlippedSet] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    setFlippedSet(new Set());
+    const ids = reveal.cards.map(c => c.cardId);
+    const timers: number[] = [];
+    ids.forEach((id, i) => {
+      const t = window.setTimeout(() => {
+        setFlippedSet(prev => {
+          const next = new Set(prev);
+          next.add(id);
+          return next;
+        });
+      }, 220 + i * 280);
+      timers.push(t);
+    });
+    return () => timers.forEach(t => clearTimeout(t));
+  }, [reveal.storytellerCardId, reveal.clue]);
+
   const playerName = (id: string) =>
     state.players.find(p => p.id === id)?.name ?? '?';
 
@@ -836,28 +914,44 @@ function RevealPhase({
     <div className="panel">
       <div className="clue">"{reveal.clue}"</div>
       <div className="muted" style={{ textAlign: 'center', marginBottom: 8 }}>
-        🎙️ {playerName(reveal.storytellerId)}'s card was the highlighted one
+        🎙️ {playerName(reveal.storytellerId)}'s card is highlighted
       </div>
       <div className="card-grid">
-        {reveal.cards.map(c => (
-          <div
-            key={c.cardId}
-            className={
-              'card' + (c.cardId === reveal.storytellerCardId ? ' story' : '')
-            }
-            onClick={() => setZoom(c.cardId)}
-            style={{ cursor: 'zoom-in' }}
-          >
-            <img src={cardUrl(c.cardId)} alt="" />
-            <div className="owner">{playerName(c.ownerId)}</div>
-            {c.voterIds.length > 0 && (
-              <div className="voters">
-                voted by {c.voterIds.map(playerName).join(', ')}
+        {reveal.cards.map(c => {
+          const isStory = c.cardId === reveal.storytellerCardId;
+          const flipped = flippedSet.has(c.cardId);
+          const owner = state.players.find(p => p.id === c.ownerId);
+          return (
+            <div
+              key={c.cardId}
+              className={'flip-card' + (flipped ? ' flipped' : '')}
+              onClick={() => flipped && setZoom(c.cardId)}
+              style={{ cursor: flipped ? 'zoom-in' : 'default' }}
+            >
+              <div className="flip-inner">
+                <div className="flip-back">
+                  <span className="flip-back-mark">✦</span>
+                </div>
+                <div className={'flip-front card' + (isStory ? ' story' : '')}>
+                  <img src={cardUrl(c.cardId)} alt="" />
+                  {owner && (
+                    <div className="owner" style={{ borderLeft: `4px solid ${playerColor(owner.id)}` }}>
+                      <Avatar player={owner} size={16} /> {owner.name}
+                    </div>
+                  )}
+                  {c.voterIds.length > 0 && (
+                    <div className="voters">
+                      voted by {c.voterIds.map(playerName).join(', ')}
+                    </div>
+                  )}
+                </div>
               </div>
-            )}
-          </div>
-        ))}
+            </div>
+          );
+        })}
       </div>
+
+      <ReactionsBar state={state} setError={setError} />
 
       <h3 style={{ marginTop: 16 }}>Scores</h3>
       {[...state.players]
@@ -866,6 +960,7 @@ function RevealPhase({
           const d = reveal.deltas[p.id] ?? 0;
           return (
             <div key={p.id} className="score-row">
+              <Avatar player={p} size={20} />
               <span>{p.name}</span>
               <span className="spacer" />
               <span className={'delta ' + (d > 0 ? 'pos' : 'zero')}>
@@ -890,6 +985,91 @@ function RevealPhase({
   );
 }
 
+// ---------- Reactions ----------
+function ReactionsBar({
+  state,
+  setError,
+}: {
+  state: PrivateState;
+  setError: (m: string) => void;
+}) {
+  const send = async (emoji: string) => {
+    try {
+      buzz(40);
+      await callEmit('react', { code: state.code, emoji });
+    } catch (e: any) {
+      setError(e.message);
+    }
+  };
+  return (
+    <div className="reactions-bar">
+      {ALLOWED_REACTIONS.map(e => (
+        <button
+          key={e}
+          className="reaction-btn"
+          onClick={() => send(e)}
+          aria-label={`React ${e}`}
+        >
+          {e}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+interface FloatingReaction {
+  id: number;
+  emoji: string;
+  playerName: string;
+  color: string;
+  left: number; // %
+}
+function FloatingReactions({ state }: { state: PrivateState }) {
+  const [items, setItems] = useState<FloatingReaction[]>([]);
+  const counter = useRef(0);
+  useEffect(() => {
+    const onReact = (p: { playerId: string; emoji: string; ts: number }) => {
+      const player = state.players.find(pp => pp.id === p.playerId);
+      const id = ++counter.current;
+      const it: FloatingReaction = {
+        id,
+        emoji: p.emoji,
+        playerName: player?.name ?? '',
+        color: playerColor(p.playerId),
+        left: 10 + Math.random() * 70,
+      };
+      setItems(prev => [...prev, it]);
+      window.setTimeout(() => {
+        setItems(prev => prev.filter(x => x.id !== id));
+      }, 1800);
+    };
+    socket.on('reaction', onReact);
+    return () => {
+      socket.off('reaction', onReact);
+    };
+  }, [state.players]);
+  if (items.length === 0) return null;
+  return (
+    <div className="floating-reactions" aria-hidden>
+      {items.map(it => (
+        <div
+          key={it.id}
+          className="floating-reaction"
+          style={{ left: `${it.left}%` }}
+        >
+          <span className="floating-reaction-emoji">{it.emoji}</span>
+          <span
+            className="floating-reaction-name"
+            style={{ background: it.color }}
+          >
+            {it.playerName}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // ---------- GAME OVER ----------
 function GameOver({
   state,
@@ -906,6 +1086,35 @@ function GameOver({
       setError(e.message);
     }
   };
+  const share = async () => {
+    try {
+      const blob = await renderShareImage(state);
+      if (!blob) return setError('Could not generate image');
+      const file = new File([blob], 'dixit-results.png', { type: 'image/png' });
+      const nav = navigator as any;
+      if (nav.canShare?.({ files: [file] })) {
+        await nav.share({
+          files: [file],
+          title: 'Dixit results',
+          text: `🎨 Dixit — winner: ${winners.map(w => w.name).join(', ')}`,
+        });
+        return;
+      }
+      // Fallback: download
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'dixit-results.png';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+    } catch (e: any) {
+      // Swallow user-cancel from Web Share API
+      if (e?.name === 'AbortError') return;
+      setError(e.message ?? 'Share failed');
+    }
+  };
   return (
     <div className="panel">
       <h2>🏆 Game over</h2>
@@ -917,20 +1126,140 @@ function GameOver({
         .sort((a, b) => b.score - a.score)
         .map(p => (
           <div key={p.id} className="score-row">
+            <Avatar player={p} size={20} />
             <span>{p.name}</span>
             <span className="spacer" />
             <span style={{ fontWeight: 700 }}>{p.score}</span>
           </div>
         ))}
-      {state.you.isHost ? (
-        <button className="btn" style={{ marginTop: 14 }} onClick={again}>
-          Play again
+      <div className="row" style={{ marginTop: 14 }}>
+        <button className="btn secondary" onClick={share}>
+          📤 Share results
         </button>
-      ) : (
-        <p className="muted" style={{ marginTop: 14 }}>Waiting for host…</p>
-      )}
+        <span className="spacer" />
+        {state.you.isHost ? (
+          <button className="btn" onClick={again}>
+            Play again
+          </button>
+        ) : (
+          <p className="muted">Waiting for host…</p>
+        )}
+      </div>
     </div>
   );
+}
+
+/** Draw a shareable summary PNG of the final scores. */
+async function renderShareImage(state: PrivateState): Promise<Blob | null> {
+  const W = 1080;
+  const headerH = 180;
+  const rowH = 88;
+  const padding = 56;
+  const sorted = [...state.players].sort((a, b) => b.score - a.score);
+  const H = headerH + sorted.length * rowH + padding * 2 + 80;
+  const canvas = document.createElement('canvas');
+  canvas.width = W;
+  canvas.height = H;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return null;
+
+  // Background
+  const bg = ctx.createLinearGradient(0, 0, W, H);
+  bg.addColorStop(0, '#312e81');
+  bg.addColorStop(1, '#0f172a');
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, W, H);
+
+  // Header
+  ctx.fillStyle = '#f8fafc';
+  ctx.font = 'bold 64px Georgia, serif';
+  ctx.textAlign = 'left';
+  ctx.fillText('🎨 Dixit', padding, padding + 60);
+  ctx.fillStyle = '#94a3b8';
+  ctx.font = '28px -apple-system, "Segoe UI", Roboto, sans-serif';
+  ctx.fillText(`Room ${state.code} · ${state.history.length} rounds`, padding, padding + 110);
+
+  // Winner badge
+  const winners = sorted.filter(p => state.winnerIds.includes(p.id));
+  ctx.fillStyle = '#fde68a';
+  ctx.font = 'bold 36px -apple-system, "Segoe UI", Roboto, sans-serif';
+  ctx.textAlign = 'right';
+  const winnerText =
+    winners.length > 1
+      ? `🏆 ${winners.map(w => w.name).join(' & ')}`
+      : `🏆 ${winners[0]?.name ?? '—'}`;
+  ctx.fillText(winnerText, W - padding, padding + 80);
+
+  // Score rows
+  let y = headerH + padding;
+  for (let i = 0; i < sorted.length; i++) {
+    const p = sorted[i];
+    const isWinner = state.winnerIds.includes(p.id);
+    const rowY = y + i * rowH;
+    // Row background
+    ctx.fillStyle = isWinner ? 'rgba(253, 230, 138, 0.12)' : 'rgba(30, 41, 59, 0.6)';
+    roundRect(ctx, padding, rowY, W - padding * 2, rowH - 14, 18);
+    ctx.fill();
+
+    // Avatar circle
+    ctx.fillStyle = playerColor(p.id);
+    ctx.beginPath();
+    ctx.arc(padding + 44, rowY + (rowH - 14) / 2, 26, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#0f172a';
+    ctx.font = 'bold 28px -apple-system, "Segoe UI", Roboto, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(playerInitial(p.name), padding + 44, rowY + (rowH - 14) / 2 + 1);
+
+    // Rank
+    ctx.fillStyle = '#94a3b8';
+    ctx.font = 'bold 26px -apple-system, "Segoe UI", Roboto, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(`#${i + 1}`, padding + 90, rowY + (rowH - 14) / 2);
+
+    // Name
+    ctx.fillStyle = '#f8fafc';
+    ctx.font = '32px -apple-system, "Segoe UI", Roboto, sans-serif';
+    ctx.fillText(p.name, padding + 150, rowY + (rowH - 14) / 2);
+
+    // Score
+    ctx.fillStyle = isWinner ? '#fde68a' : '#f8fafc';
+    ctx.font = 'bold 44px -apple-system, "Segoe UI", Roboto, sans-serif';
+    ctx.textAlign = 'right';
+    ctx.fillText(String(p.score), W - padding - 24, rowY + (rowH - 14) / 2);
+  }
+
+  // Footer
+  ctx.fillStyle = '#64748b';
+  ctx.font = '22px -apple-system, "Segoe UI", Roboto, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'alphabetic';
+  ctx.fillText(
+    `First to ${state.winScore} · ${state.players.length} players`,
+    W / 2,
+    H - padding / 1.5,
+  );
+
+  return await new Promise(resolve => canvas.toBlob(b => resolve(b), 'image/png'));
+}
+
+function roundRect(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  r: number,
+) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
 }
 
 // ---------- Shared hand ----------

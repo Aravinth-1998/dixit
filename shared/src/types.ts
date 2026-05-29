@@ -123,12 +123,22 @@ export interface ClientToServer {
     p: { code: string; playerId: string },
     cb: (res: Result<{}>) => void
   ) => void;
+  /** Broadcast an emoji reaction to everyone in the room. */
+  react: (
+    p: { code: string; emoji: string },
+    cb: (res: Result<{}>) => void
+  ) => void;
 }
 
 export interface ServerToClient {
   state: (state: PrivateState) => void;
   error: (msg: string) => void;
+  /** Pushed when any player reacts; clients render a short-lived float. */
+  reaction: (p: { playerId: string; emoji: string; ts: number }) => void;
 }
+
+export const ALLOWED_REACTIONS = ['👍', '😂', '😢', '👎'] as const;
+export type Reaction = typeof ALLOWED_REACTIONS[number];
 
 export type Result<T> = { ok: true; data: T } | { ok: false; error: string };
 

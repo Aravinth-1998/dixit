@@ -461,3 +461,141 @@ input[type=text], input[type=number] {
   gap: 4px;
   flex-wrap: wrap;
 }
+
+/* Avatar — colored circle with a single initial */
+.avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  color: #0f172a;
+  font-weight: 800;
+  line-height: 1;
+  flex-shrink: 0;
+  text-transform: uppercase;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+}
+
+/* 3D card flip (REVEAL phase) */
+.flip-card {
+  position: relative;
+  aspect-ratio: 2 / 3;
+  perspective: 1100px;
+  width: 100%;
+}
+.flip-inner {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  transition: transform 0.65s cubic-bezier(0.45, 0, 0.2, 1);
+  transform-style: preserve-3d;
+}
+.flip-card.flipped .flip-inner {
+  transform: rotateY(180deg);
+}
+.flip-back,
+.flip-front {
+  position: absolute;
+  inset: 0;
+  border-radius: 14px;
+  -webkit-backface-visibility: hidden;
+  backface-visibility: hidden;
+  overflow: hidden;
+}
+.flip-back {
+  background:
+    radial-gradient(circle at 30% 30%, rgba(255, 255, 255, 0.15), transparent 50%),
+    linear-gradient(135deg, #4c1d95 0%, #1e1b4b 60%, #0f172a 100%);
+  border: 3px solid #3b0764;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+}
+.flip-back-mark {
+  font-size: 56px;
+  color: rgba(255, 255, 255, 0.55);
+  text-shadow: 0 0 16px rgba(168, 85, 247, 0.7);
+  animation: spinSlow 8s linear infinite;
+}
+@keyframes spinSlow {
+  to { transform: rotate(360deg); }
+}
+.flip-front {
+  transform: rotateY(180deg);
+}
+
+/* Reactions bar (REVEAL) */
+.reactions-bar {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  margin: 14px 0 4px;
+  flex-wrap: wrap;
+}
+.reaction-btn {
+  font-size: 28px;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: var(--bg2);
+  border: 1px solid #334155;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.1s ease, background 0.1s ease;
+  padding: 0;
+  line-height: 1;
+}
+.reaction-btn:hover { background: #334155; }
+.reaction-btn:active { transform: scale(0.85); }
+
+/* Floating reactions overlay */
+.floating-reactions {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 150;
+  overflow: hidden;
+}
+.floating-reaction {
+  position: absolute;
+  bottom: 80px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  animation: floatUp 1.8s ease-out forwards;
+  will-change: transform, opacity;
+}
+.floating-reaction-emoji {
+  font-size: 48px;
+  filter: drop-shadow(0 4px 10px rgba(0, 0, 0, 0.5));
+}
+.floating-reaction-name {
+  color: #0f172a;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 999px;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+  max-width: 120px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+@keyframes floatUp {
+  0%   { opacity: 0; transform: translateY(20px) scale(0.6); }
+  20%  { opacity: 1; transform: translateY(0) scale(1.1); }
+  80%  { opacity: 1; transform: translateY(-180px) scale(1); }
+  100% { opacity: 0; transform: translateY(-240px) scale(0.9); }
+}
+
+/* Owner pill in REVEAL — make room for avatar */
+.flip-front .owner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+}
