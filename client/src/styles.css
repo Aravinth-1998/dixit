@@ -301,7 +301,9 @@ input[type=text], input[type=number] {
   padding: 8px 0;
 }
 @media (max-width: 480px) {
-  .players-grid { grid-template-columns: repeat(auto-fit, minmax(100px, 1fr)); }
+  /* On phones, pack exactly 2 players per row so each card has enough
+     width for the name + icons without truncating awkwardly. */
+  .players-grid { grid-template-columns: repeat(2, 1fr); }
 }
 
 .pcard {
@@ -310,6 +312,7 @@ input[type=text], input[type=number] {
   border-radius: 12px;
   padding: 8px 10px 10px;
   min-width: 0;
+  overflow: hidden;            /* belt-and-braces: never let content escape */
   transition: border-color 0.15s ease, background 0.15s ease;
 }
 .pcard.you { border-color: var(--accent); background: rgba(168,85,247,0.10); }
@@ -334,14 +337,40 @@ input[type=text], input[type=number] {
   text-overflow: ellipsis;
 }
 .pcard-done { color: var(--good); font-weight: 700; flex-shrink: 0; }
-.pcard-score {
-  font-variant-numeric: tabular-nums;
-  font-size: 12px;
-  color: var(--muted);
-  flex-shrink: 0;
+
+/* Progress-bar shown under the row; doubles as the score badge container. */
+.pcard-bar {
+  position: relative;
+  height: 14px;
+  background: rgba(148, 163, 184, 0.18);
+  border-radius: 999px;
+  overflow: hidden;
 }
-.pcard-score b { color: var(--fg); font-weight: 700; }
-.pcard-score-target { color: var(--muted); }
+.pcard-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent) 0%, #ec4899 100%);
+  border-radius: inherit;
+  transition: width 0.35s ease;
+}
+.pcard.done .pcard-bar-fill {
+  background: linear-gradient(90deg, var(--good) 0%, #22d3ee 100%);
+}
+.pcard-bar-score {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  color: #fff;
+  letter-spacing: 0.2px;
+  font-variant-numeric: tabular-nums;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.55);
+  pointer-events: none;
+  line-height: 1;
+}
+.pcard-bar-score-target { font-weight: 500; opacity: 0.8; margin-left: 1px; }
 
 .pcard-kick {
   background: transparent;

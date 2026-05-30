@@ -650,10 +650,6 @@ function PlayersBar({
               {isStoryteller && <span className="pcard-role" title="Storyteller">🎙️</span>}
               <span className="pcard-name" title={p.name}>{p.name}</span>
               {isDone && <span className="pcard-done" title="Ready">✓</span>}
-              <span className="pcard-score">
-                <b>{p.score}</b>
-                <span className="pcard-score-target">/{winScore}</span>
-              </span>
               {canKick && (
                 <button
                   className="pcard-kick"
@@ -667,6 +663,9 @@ function PlayersBar({
             </div>
             <div className="pcard-bar">
               <div className="pcard-bar-fill" style={{ width: `${pct}%` }} />
+              <span className="pcard-bar-score" title={`${p.score} / ${winScore}`}>
+                {p.score}<span className="pcard-bar-score-target">/{winScore}</span>
+              </span>
             </div>
           </div>
         );
