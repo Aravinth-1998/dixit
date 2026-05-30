@@ -113,12 +113,11 @@ export function touch(room: Room) {
 }
 
 export function generateCode(): string {
-  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  // 4-digit numeric code (1000-9999) — easier to read out loud and type on
+  // a phone keypad than a letters+digits code.
   let code = '';
   do {
-    code = '';
-    for (let i = 0; i < 4; i++)
-      code += alphabet[Math.floor(Math.random() * alphabet.length)];
+    code = String(1000 + Math.floor(Math.random() * 9000));
   } while (rooms.has(code));
   return code;
 }

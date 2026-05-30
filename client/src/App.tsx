@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { socket, emit } from './socket';
-import type { PrivateState, RoundReveal, TimerConfig } from '../../shared/src/types.ts';
+import type { PrivateState, PublicPlayer, RoundReveal, TimerConfig } from '../../shared/src/types.ts';
 import {
   MAX_PLAYERS,
   MIN_PLAYERS,
@@ -35,23 +35,40 @@ function playerInitial(name: string): string {
 function Avatar({
   player,
   size = 22,
+  isHost = false,
 }: {
   player: { id: string; name: string };
   size?: number;
+  isHost?: boolean;
 }) {
   const bg = playerColor(player.id);
   return (
     <span
-      className="avatar"
-      title={player.name}
-      style={{
-        background: bg,
-        width: size,
-        height: size,
-        fontSize: Math.round(size * 0.5),
-      }}
+      className={'avatar-wrap' + (isHost ? ' is-host' : '')}
+      style={{ width: size, height: size }}
     >
-      {playerInitial(player.name)}
+      <span
+        className="avatar"
+        title={player.name}
+        style={{
+          background: bg,
+          width: size,
+          height: size,
+          fontSize: Math.round(size * 0.5),
+        }}
+      >
+        {playerInitial(player.name)}
+      </span>
+      {isHost && (
+        <span
+          className="avatar-crown"
+          title="Host"
+          aria-label="Host"
+          style={{ fontSize: Math.max(10, Math.round(size * 0.55)) }}
+        >
+          👑
+        </span>
+      )}
     </span>
   );
 }
@@ -255,7 +272,7 @@ function Home({
     const u = new URL(location.href);
     const r = u.searchParams.get('room');
     if (r) {
-      setCode(r.toUpperCase());
+      setCode(r.replace(/\D/g, '').slice(0, 4));
       setMode('join');
     }
   }, []);
@@ -279,11 +296,12 @@ function Home({
   const join = async () => {
     setBusy(true);
     try {
+      const clean = code.replace(/\D/g, '').slice(0, 4);
       const r = await callEmit<{ token: string }>('joinRoom', {
-        code: code.toUpperCase().trim(),
+        code: clean,
         name,
       });
-      onJoined({ code: code.toUpperCase().trim(), token: r.token });
+      onJoined({ code: clean, token: r.token });
     } catch (e: any) {
       setError(e.message);
     } finally {
@@ -399,11 +417,13 @@ function Home({
             <span className="field-label">Room code</span>
             <input
               type="text"
+              inputMode="numeric"
+              pattern="[0-9]*"
               value={code}
-              maxLength={6}
-              size={6}
-              onChange={e => setCode(e.target.value.toUpperCase())}
-              placeholder="ABCD"
+              maxLength={4}
+              size={4}
+              onChange={e => setCode(e.target.value.replace(/\D/g, '').slice(0, 4))}
+              placeholder="1234"
               style={{
                 width: 'auto',
                 maxWidth: '100%',
@@ -421,7 +441,7 @@ function Home({
           <span className="spacer" />
           <button
             className="btn"
-            disabled={busy || !name.trim() || (mode === 'join' && code.trim().length < 3)}
+            disabled={busy || !name.trim() || (mode === 'join' && code.replace(/\D/g, '').length !== 4)}
             onClick={mode === 'create' ? create : join}
           >
             {mode === 'create' ? 'Create' : 'Join'}
@@ -651,8 +671,7 @@ function PlayersBar({
         return (
           <div key={p.id} className={cls.join(' ')}>
             <div className="pcard-row">
-              <Avatar player={p} size={22} />
-              {p.isHost && <span className="pcard-role" title="Host">👑</span>}
+              <Avatar player={p} size={22} isHost={p.isHost} />
               {p.isBot && <span className="pcard-role" title="AI bot">🤖</span>}
               {isStoryteller && <span className="pcard-role" title="Storyteller">🎙️</span>}
               <span className="pcard-name" title={p.name}>{p.name}</span>
@@ -1289,6 +1308,16 @@ function GameOver({
   setError: (m: string) => void;
 }) {
   const winners = state.players.filter(p => state.winnerIds.includes(p.id));
+  const youWon = winners.some(w => w.id === state.you.id);
+
+  // Local-only modal control: each player dismisses their own popup. The host
+  // can then start the next match from the panel underneath.
+  const [showModal, setShowModal] = useState(true);
+
+  // Reset the modal each time a fresh game-over event arrives (winners change).
+  const winnersKey = state.winnerIds.join(',');
+  useEffect(() => { setShowModal(true); }, [winnersKey]);
+
   const again = async () => {
     try {
       await callEmit('newMatch', { code: state.code });
@@ -1320,21 +1349,23 @@ function GameOver({
       a.remove();
       setTimeout(() => URL.revokeObjectURL(url), 5000);
     } catch (e: any) {
-      // Swallow user-cancel from Web Share API
       if (e?.name === 'AbortError') return;
       setError(e.message ?? 'Share failed');
     }
   };
+
+  const sortedScores = [...state.players].sort((a, b) => b.score - a.score);
+
   return (
-    <div className="panel">
-      <h2>🏆 Game over</h2>
-      <p style={{ fontSize: 18 }}>
-        Winner{winners.length > 1 ? 's' : ''}:{' '}
-        <b>{winners.map(w => w.name).join(', ')}</b>
-      </p>
-      {[...state.players]
-        .sort((a, b) => b.score - a.score)
-        .map(p => (
+    <>
+      {/* Underlying panel — visible after OK is clicked. */}
+      <div className="panel">
+        <h2>🏆 Game over</h2>
+        <p style={{ fontSize: 18 }}>
+          Winner{winners.length > 1 ? 's' : ''}:{' '}
+          <b>{winners.map(w => w.name).join(', ')}</b>
+        </p>
+        {sortedScores.map(p => (
           <div key={p.id} className="score-row">
             <Avatar player={p} size={20} />
             <span>{p.name}</span>
@@ -1342,19 +1373,142 @@ function GameOver({
             <span style={{ fontWeight: 700 }}>{p.score}</span>
           </div>
         ))}
-      <div className="row" style={{ marginTop: 14 }}>
-        <button className="btn secondary" onClick={share}>
-          📤 Share results
-        </button>
-        <span className="spacer" />
-        {state.you.isHost ? (
-          <button className="btn" onClick={again}>
-            Play again
+        <div className="row" style={{ marginTop: 14 }}>
+          <button className="btn secondary" onClick={share}>
+            📤 Share results
           </button>
-        ) : (
-          <p className="muted">Waiting for host…</p>
-        )}
+          <span className="spacer" />
+          {state.you.isHost ? (
+            <button className="btn" onClick={again}>
+              Play again
+            </button>
+          ) : (
+            <p className="muted">Waiting for host…</p>
+          )}
+        </div>
       </div>
+
+      {/* Celebration modal — shown first, dismissed with OK. */}
+      {showModal && (
+        <GameOverModal
+          winners={winners}
+          youWon={youWon}
+          scores={sortedScores}
+          onShare={share}
+          onOk={() => setShowModal(false)}
+        />
+      )}
+    </>
+  );
+}
+
+function GameOverModal({
+  winners,
+  youWon,
+  scores,
+  onShare,
+  onOk,
+}: {
+  winners: PublicPlayer[];
+  youWon: boolean;
+  scores: PublicPlayer[];
+  onShare: () => void;
+  onOk: () => void;
+}) {
+  // Standard competition ranking ("1224"): tied players share the same
+  // rank, the next rank below is skipped. `scores` is already sorted desc.
+  const ranks: number[] = [];
+  let lastScore = Number.POSITIVE_INFINITY;
+  let lastRank = 0;
+  scores.forEach((p, i) => {
+    if (p.score === lastScore) {
+      ranks.push(lastRank);
+    } else {
+      ranks.push(i + 1);
+      lastRank = i + 1;
+      lastScore = p.score;
+    }
+  });
+
+  return (
+    <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="Game over">
+      <Confetti />
+      <div className="modal-card gameover-modal" onClick={e => e.stopPropagation()}>
+        <div className="gameover-trophy" aria-hidden="true">🏆</div>
+        <h2 className="gameover-title">
+          {youWon ? 'You won! 🎉' : 'Game over'}
+        </h2>
+        <p className="gameover-subtitle">
+          Winner{winners.length > 1 ? 's' : ''}:{' '}
+          <b>{winners.map(w => w.name).join(', ')}</b>
+        </p>
+
+        <div className="gameover-scores">
+          {scores.map((p, i) => {
+            const rank = ranks[i];
+            const rankCls = rank <= 3 ? ` r${rank}` : '';
+            return (
+              <div key={p.id} className={'gameover-score-row' + rankCls}>
+                <span className="gameover-rank">#{rank}</span>
+                <Avatar player={p} size={22} isHost={p.isHost} />
+                <span className="gameover-name">{p.name}</span>
+                <span className="gameover-pts">{p.score}</span>
+              </div>
+            );
+          })}
+        </div>
+
+        <div className="modal-actions">
+          <button className="btn secondary" onClick={onShare}>
+            📤 Share
+          </button>
+          <button className="btn" onClick={onOk} autoFocus>
+            OK
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Pure-CSS confetti burst — 60 colored squares fall + spin for ~3s.
+ * No third-party library; computed once on mount.
+ */
+function Confetti() {
+  const pieces = useMemo(() => {
+    const colors = ['#a855f7', '#22d3ee', '#22c55e', '#f59e0b', '#ef4444', '#ec4899', '#3b82f6', '#eab308'];
+    return Array.from({ length: 60 }, (_, i) => ({
+      id: i,
+      left: Math.random() * 100,
+      delay: Math.random() * 0.6,
+      duration: 2.2 + Math.random() * 1.6,
+      drift: -40 + Math.random() * 80,
+      rotate: Math.random() * 360,
+      spin: 360 + Math.random() * 540,
+      color: colors[i % colors.length],
+      size: 6 + Math.floor(Math.random() * 8),
+    }));
+  }, []);
+  return (
+    <div className="confetti-layer" aria-hidden="true">
+      {pieces.map(p => (
+        <span
+          key={p.id}
+          className="confetti-piece"
+          style={{
+            left: `${p.left}%`,
+            background: p.color,
+            width: p.size,
+            height: p.size * 1.4,
+            ['--drift' as any]: `${p.drift}px`,
+            ['--rot' as any]: `${p.rotate}deg`,
+            ['--spin' as any]: `${p.spin}deg`,
+            animationDelay: `${p.delay}s`,
+            animationDuration: `${p.duration}s`,
+          }}
+        />
+      ))}
     </div>
   );
 }
@@ -1562,15 +1716,16 @@ function useGameAlerts(state: PrivateState | null) {
     if (phaseChanged && !youChanged) {
       if (state.phase === 'CLUE' && state.you.isStoryteller) {
         sounds.yourTurn();
-        buzz([140, 80, 140]);
+        // Single strong pulse — "your turn to play".
+        buzz(450);
         setInfo("🎙️ You're the storyteller — pick a card and give a clue!");
       } else if (state.phase === 'SUBMIT' && !state.you.isStoryteller) {
         sounds.phaseAdvance();
-        buzz(120);
+        buzz(350);
         setInfo('🃏 Pick a card from your hand that fits the clue.');
       } else if (state.phase === 'VOTE' && !state.you.isStoryteller) {
         sounds.phaseAdvance();
-        buzz(120);
+        buzz(350);
         setInfo("🗳️ Vote — which card is the storyteller's?");
       } else if (state.phase === 'REVEAL') {
         sounds.reveal();

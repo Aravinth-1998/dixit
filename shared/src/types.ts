@@ -49,7 +49,7 @@ export const DEFAULT_TIMERS: TimerConfig = {
   submitSec: 0,
   voteSec: 0,
 };
-export const MAX_PHASE_SEC = 300; // 5 min cap per phase
+export const MAX_PHASE_SEC = 120; // 2 min cap per phase
 
 export interface PublicState {
   code: string;
