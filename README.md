@@ -58,3 +58,35 @@ The deck is whatever `client/public/cards/manifest.json` references. To use your
 
 Each player's session is stored in `localStorage`. If your phone screen locks or you refresh, you'll automatically rejoin the same seat with your hand and score intact.
 
+## AI bots & per-card clues
+
+Bots can fill empty seats. Their behaviour is driven by a **per-card clue
+dictionary** at `server/data/cardClues.json` (5 evocative clues per card image):
+
+- **As storyteller**, a bot picks a hand card that has curated clues and says one of them.
+- **As a non-storyteller**, a bot scores every card in its hand against the storyteller's clue (token overlap with that card's curated clues) and submits the best match. Same logic drives its vote.
+- If a card has no curated entry, the bot falls back to a generic poetic clue / random pick so the game still works.
+
+### (Re)generate the clue dictionary
+
+Run a one-time vision pass over `client/public/cards/*.png`:
+
+```powershell
+# Free option (recommended): get a key at https://aistudio.google.com/apikey
+$env:GEMINI_API_KEY = "YOUR_KEY"
+npm run clues:generate
+
+# Or OpenAI:
+$env:OPENAI_API_KEY = "YOUR_KEY"
+npm run clues:generate
+
+# Options:
+node scripts/generateClues.mjs --force                 # overwrite existing entries
+node scripts/generateClues.mjs --only=card-001,card-007
+node scripts/generateClues.mjs --concurrency=4
+node scripts/generateClues.mjs --model=gemini-2.0-flash
+```
+
+The script is resumable: it skips cards that already have ≥5 clues unless you pass `--force`. Results are written incrementally to `server/data/cardClues.json`. After regenerating, restart the server.
+
+

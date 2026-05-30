@@ -483,7 +483,10 @@ describe('Auto-expire (phase timer fires)', () => {
     const { room } = startedRoom(3);
     expireClue(room);
     expect(room.phase).toBe('SUBMIT');
-    expect(room.clue).toBe('…');
+    // Clue is now picked from the card's curated clues (or a generic
+    // fallback if the card has no entry yet); just verify it's non-empty.
+    expect(typeof room.clue).toBe('string');
+    expect((room.clue ?? '').length).toBeGreaterThan(0);
     expect(room.storytellerCardId).toBeTruthy();
   });
   it('expireSubmit auto-submits remaining players', () => {

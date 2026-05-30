@@ -14,7 +14,8 @@
     "build": "npm --workspace shared run build && npm --workspace client run build && npm --workspace server run build",
     "start": "node server/dist/server/src/server.js",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "clues:generate": "node scripts/generateClues.mjs"
   },
   "devDependencies": {
     "concurrently": "^9.0.1",

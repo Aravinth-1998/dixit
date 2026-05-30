@@ -15,6 +15,7 @@ import {
   RoundReveal,
   TimerConfig,
 } from '../../shared/src/types.js';
+import { CARD_CLUES, pickCardClue, scoreClueMatch } from './cardClues.js';
 
 export interface Player {
   id: string;            // playerToken
@@ -171,14 +172,6 @@ const BOT_NAME_POOL = [
   'Juno', 'Atlas', 'Zephyr', 'Iris', 'Milo', 'Cleo',
 ];
 
-const BOT_CLUES = [
-  'mystery', 'dreams', 'silence', 'a journey', 'lost', 'discovery',
-  'whispers', 'freedom', 'home', 'forgotten', 'the dance', 'flight',
-  'wonder', 'echoes', 'beneath the surface', 'a memory', 'something brave',
-  'longing', 'quiet', 'curious', 'a secret', 'awakening', 'shadows',
-  'rebellion', 'transformation', 'gentle', 'distant', 'a reflection',
-  'almost', 'tomorrow', 'far away', 'the question', 'small joys',
-];
 
 function uniqueBotName(room: Room): string {
   const used = new Set(room.players.map(p => p.name.toLowerCase()));
@@ -218,27 +211,49 @@ function pickRandom<T>(arr: T[]): T {
   return arr[Math.floor(Math.random() * arr.length)];
 }
 
-/** Bot storyteller picks a random card and a random clue. */
+/** Bot storyteller picks a card and a clue curated for that card's image. */
 export function doBotClue(room: Room, botId: string) {
   const p = room.players.find(pp => pp.id === botId);
   if (!p || !p.isBot) return;
   if (room.phase !== 'CLUE') return;
   if (room.players[room.storytellerIdx]?.id !== botId) return;
   if (p.hand.length === 0) return;
-  submitClue(room, botId, pickRandom(p.hand), pickRandom(BOT_CLUES));
+  // Prefer hand cards we actually have curated clues for; fall back to any.
+  const curated = p.hand.filter(c => (CARD_CLUES[c]?.length ?? 0) > 0);
+  const cardId = pickRandom(curated.length ? curated : p.hand);
+  submitClue(room, botId, cardId, pickCardClue(cardId));
 }
 
-/** Bot non-storyteller picks a random hand card to submit. */
+/**
+ * Bot non-storyteller picks the card in its hand whose curated clues best
+ * match the storyteller's clue. Falls back to random if nothing scores.
+ */
 export function doBotSubmit(room: Room, botId: string) {
   const p = room.players.find(pp => pp.id === botId);
   if (!p || !p.isBot) return;
   if (room.phase !== 'SUBMIT') return;
   if (room.submissions.has(botId)) return;
   if (p.hand.length === 0) return;
-  submitCard(room, botId, pickRandom(p.hand));
+  const clue = room.clue ?? '';
+  let best: { card: string; score: number }[] = [];
+  let bestScore = -1;
+  for (const card of p.hand) {
+    const s = scoreClueMatch(clue, card);
+    if (s > bestScore) {
+      bestScore = s;
+      best = [{ card, score: s }];
+    } else if (s === bestScore) {
+      best.push({ card, score: s });
+    }
+  }
+  const chosen = bestScore > 0 ? pickRandom(best).card : pickRandom(p.hand);
+  submitCard(room, botId, chosen);
 }
 
-/** Bot non-storyteller votes for a random table card that isn't its own. */
+/**
+ * Bot non-storyteller votes for a table card whose curated clues best match
+ * the storyteller's clue (excluding its own submission). Falls back to random.
+ */
 export function doBotVote(room: Room, botId: string) {
   const p = room.players.find(pp => pp.id === botId);
   if (!p || !p.isBot) return;
@@ -247,7 +262,16 @@ export function doBotVote(room: Room, botId: string) {
   const myCard = room.submissions.get(botId);
   const choices = room.tableOrder.filter(c => c !== myCard);
   if (choices.length === 0) return;
-  submitVote(room, botId, pickRandom(choices));
+  const clue = room.clue ?? '';
+  let best: string[] = [];
+  let bestScore = -1;
+  for (const c of choices) {
+    const s = scoreClueMatch(clue, c);
+    if (s > bestScore) { bestScore = s; best = [c]; }
+    else if (s === bestScore) best.push(c);
+  }
+  const chosen = bestScore > 0 ? pickRandom(best) : pickRandom(choices);
+  submitVote(room, botId, chosen);
 }
 
 export function isBanned(room: Room, token: string): boolean {
@@ -379,13 +403,14 @@ export function kickPlayer(
 
 // ---------- Timer-expiry auto-actions ----------
 
-/** CLUE expired: storyteller didn't act — pick a random card + filler clue. */
+/** CLUE expired: storyteller didn't act — pick a card + a curated clue. */
 export function expireClue(room: Room): boolean {
   if (room.phase !== 'CLUE') return false;
   const st = room.players[room.storytellerIdx];
   if (!st || st.hand.length === 0) return false;
-  const cardId = pickRandom(st.hand);
-  submitClue(room, st.id, cardId, '…');
+  const curated = st.hand.filter(c => (CARD_CLUES[c]?.length ?? 0) > 0);
+  const cardId = pickRandom(curated.length ? curated : st.hand);
+  submitClue(room, st.id, cardId, pickCardClue(cardId));
   return true;
 }
 
