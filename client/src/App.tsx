@@ -304,14 +304,14 @@ function Home({
       <h2>{mode === 'create' ? 'Create room' : 'Join room'}</h2>
       <div style={{ display: 'grid', gap: 12 }}>
         <div className="field">
-          <span className="field-label">Your name</span>
+          <span className="field-label">Your nick name</span>
           <input
             type="text"
             value={name}
             maxLength={25}
             size={25}
             onChange={e => setName(e.target.value)}
-            placeholder="e.g. Aravinth"
+            placeholder="e.g. The Venomon"
             style={{ width: 'auto', maxWidth: '100%' }}
           />
         </div>

@@ -15,7 +15,13 @@ import {
   RoundReveal,
   TimerConfig,
 } from '../../shared/src/types.js';
-import { CARD_CLUES, pickCardClue, scoreClueMatch, hasCardData } from './cardClues.js';
+import { CARD_CLUES, pickCardClue, scoreClueMatch, hasCardData, GENERIC_CLUES } from './cardClues.js';
+import {
+  isEmbeddingsAvailable,
+  hasCardEmbedding,
+  scoreClueAgainstCards,
+  rankStorytellerMoves,
+} from './cardEmbeddings.js';
 
 export interface Player {
   id: string;            // playerToken
@@ -29,6 +35,47 @@ export interface Player {
   hasVoted: boolean;
   /** True for AI-controlled filler players. */
   isBot?: boolean;
+  /** Persona controlling how this bot picks/votes. Undefined for humans. */
+  personality?: BotPersonality;
+}
+
+/**
+ * Sampling temperatures used when this bot scores candidates with CLIP
+ * cosine similarity. Lower = closer to argmax (predictable), higher = more
+ * stochastic. CLIP scores typically span ~0.10-0.25, so values in
+ * 0.005-0.06 give a meaningful spread.
+ */
+export interface BotPersonality {
+  /** Short label used internally (and could surface in UI logs). */
+  label: string;
+  /** Used by `doBotSubmit` when matching the storyteller's clue. */
+  submitTemp: number;
+  /** Used by `doBotVote` when guessing the storyteller's card. */
+  voteTemp: number;
+  /** Used by `doBotClue` when this bot is the storyteller. */
+  storytellerTemp: number;
+}
+
+/**
+ * Personality presets. Each new bot is assigned one at random in `addBot`,
+ * so a table with 3 bots typically contains 3 different "playing styles" —
+ * they'll often pick / vote differently from each other on the same clue.
+ */
+export const BOT_PERSONALITIES: BotPersonality[] = [
+  // Methodical: almost always argmax. Easy to read, rarely surprises.
+  { label: 'careful',  submitTemp: 0.004, voteTemp: 0.004, storytellerTemp: 0.005 },
+  // Solid default — picks the best most of the time but sometimes the 2nd.
+  { label: 'balanced', submitTemp: 0.012, voteTemp: 0.012, storytellerTemp: 0.012 },
+  // Loose interpreter — happy to pick a card that's "close enough".
+  { label: 'playful',  submitTemp: 0.025, voteTemp: 0.025, storytellerTemp: 0.025 },
+  // Wild card — often picks middling matches, fun chaos.
+  { label: 'chaotic',  submitTemp: 0.050, voteTemp: 0.050, storytellerTemp: 0.040 },
+  // Loves abstract clues — picks creative storyteller clues, decent matcher.
+  { label: 'poet',     submitTemp: 0.015, voteTemp: 0.015, storytellerTemp: 0.050 },
+];
+
+function randomPersonality(): BotPersonality {
+  return BOT_PERSONALITIES[Math.floor(Math.random() * BOT_PERSONALITIES.length)];
 }
 
 export interface Room {
@@ -203,6 +250,7 @@ export function addBot(room: Room): string {
     hasSubmitted: false,
     hasVoted: false,
     isBot: true,
+    personality: randomPersonality(),
   });
   return token;
 }
@@ -211,30 +259,126 @@ function pickRandom<T>(arr: T[]): T {
   return arr[Math.floor(Math.random() * arr.length)];
 }
 
+/** Sample up to `n` random items from `arr` (without replacement). */
+function sample<T>(arr: T[], n: number): T[] {
+  if (arr.length <= n) return arr.slice();
+  return shuffle(arr).slice(0, n);
+}
+
+/**
+ * Boltzmann/softmax sample of `items` weighted by their `.score`, using
+ * `temperature`. As temp → 0 the result is the argmax; as temp grows the
+ * distribution flattens to uniform. Returns the picked item.
+ */
+function softmaxSample<T extends { score: number }>(items: T[], temperature: number): T {
+  if (items.length === 0) throw new Error('softmaxSample: empty');
+  if (items.length === 1) return items[0];
+  const t = Math.max(temperature, 1e-6);
+  let max = -Infinity;
+  for (const it of items) if (it.score > max) max = it.score;
+  // Subtract max for numerical stability.
+  const weights = items.map(it => Math.exp((it.score - max) / t));
+  let sum = 0;
+  for (const w of weights) sum += w;
+  if (!isFinite(sum) || sum <= 0) return items[0];
+  let r = Math.random() * sum;
+  for (let i = 0; i < items.length; i++) {
+    r -= weights[i];
+    if (r <= 0) return items[i];
+  }
+  return items[items.length - 1];
+}
+
+const DEFAULT_PERSONALITY: BotPersonality = {
+  label: 'balanced',
+  submitTemp: 0.012,
+  voteTemp: 0.012,
+  storytellerTemp: 0.012,
+};
+
+function personalityOf(p: Player | undefined): BotPersonality {
+  return p?.personality ?? DEFAULT_PERSONALITY;
+}
+
+/**
+ * Build candidate (card, clueOptions) pairs for the storyteller.
+ * For each hand card we offer a small bank of plausible clues:
+ *   - the curated clues for that card (if any), AND
+ *   - a few generic clues, so the embedding scorer can pick whichever fits
+ *     the image best regardless of curation coverage.
+ */
+function storytellerCandidates(hand: string[]): { cardId: string; clues: string[] }[] {
+  return hand.map(cardId => {
+    const curated = CARD_CLUES[cardId]?.clues ?? [];
+    const generic = sample(GENERIC_CLUES, 4);
+    // Dedup while preserving order; curated first so embedding tie-breaks
+    // prefer them.
+    const seen = new Set<string>();
+    const clues: string[] = [];
+    for (const c of [...curated, ...generic]) {
+      const k = c.trim().toLowerCase();
+      if (!k || seen.has(k)) continue;
+      seen.add(k);
+      clues.push(c);
+    }
+    return { cardId, clues };
+  });
+}
+
 /** Bot storyteller picks a card and a clue curated for that card's image. */
-export function doBotClue(room: Room, botId: string) {
+export async function doBotClue(room: Room, botId: string) {
   const p = room.players.find(pp => pp.id === botId);
   if (!p || !p.isBot) return;
   if (room.phase !== 'CLUE') return;
   if (room.players[room.storytellerIdx]?.id !== botId) return;
   if (p.hand.length === 0) return;
-  // Prefer hand cards we actually have curated clues for; fall back to any.
+
+  // Preferred path: visual AI via CLIP image embeddings.
+  if (isEmbeddingsAvailable()) {
+    const candidates = storytellerCandidates(p.hand).filter(c =>
+      hasCardEmbedding(c.cardId) && c.clues.length > 0,
+    );
+    if (candidates.length > 0) {
+      const ranked = await rankStorytellerMoves(candidates);
+      if (ranked.length && room.phase === 'CLUE' && room.players[room.storytellerIdx]?.id === botId) {
+        const pick = softmaxSample(ranked, personalityOf(p).storytellerTemp);
+        submitClue(room, botId, pick.cardId, pick.clue);
+        return;
+      }
+    }
+  }
+
+  // Fallback: prefer hand cards we actually have curated clues for; random clue.
   const curated = p.hand.filter(c => hasCardData(c));
   const cardId = pickRandom(curated.length ? curated : p.hand);
   submitClue(room, botId, cardId, pickCardClue(cardId));
 }
 
 /**
- * Bot non-storyteller picks the card in its hand whose curated clues best
- * match the storyteller's clue. Falls back to random if nothing scores.
+ * Bot non-storyteller picks the card in its hand that best matches the
+ * storyteller's clue (image embedding similarity preferred, with tag-based
+ * fallback). Ties are broken randomly; if nothing scores, picks at random.
  */
-export function doBotSubmit(room: Room, botId: string) {
+export async function doBotSubmit(room: Room, botId: string) {
   const p = room.players.find(pp => pp.id === botId);
   if (!p || !p.isBot) return;
   if (room.phase !== 'SUBMIT') return;
   if (room.submissions.has(botId)) return;
   if (p.hand.length === 0) return;
   const clue = room.clue ?? '';
+
+  // Preferred: image-embedding similarity.
+  if (clue && isEmbeddingsAvailable()) {
+    const scores = await scoreClueAgainstCards(clue, p.hand);
+    if (scores.size > 0 && room.phase === 'SUBMIT' && !room.submissions.has(botId)) {
+      const items = Array.from(scores, ([id, score]) => ({ id, score }));
+      const chosen = softmaxSample(items, personalityOf(p).submitTemp).id;
+      submitCard(room, botId, chosen);
+      return;
+    }
+  }
+
+  // Fallback: curated tag scorer.
   let best: { card: string; score: number }[] = [];
   let bestScore = -1;
   for (const card of p.hand) {
@@ -251,10 +395,10 @@ export function doBotSubmit(room: Room, botId: string) {
 }
 
 /**
- * Bot non-storyteller votes for a table card whose curated clues best match
- * the storyteller's clue (excluding its own submission). Falls back to random.
+ * Bot non-storyteller votes for the table card that best matches the
+ * storyteller's clue (excluding its own submission).
  */
-export function doBotVote(room: Room, botId: string) {
+export async function doBotVote(room: Room, botId: string) {
   const p = room.players.find(pp => pp.id === botId);
   if (!p || !p.isBot) return;
   if (room.phase !== 'VOTE') return;
@@ -263,6 +407,17 @@ export function doBotVote(room: Room, botId: string) {
   const choices = room.tableOrder.filter(c => c !== myCard);
   if (choices.length === 0) return;
   const clue = room.clue ?? '';
+
+  if (clue && isEmbeddingsAvailable()) {
+    const scores = await scoreClueAgainstCards(clue, choices);
+    if (scores.size > 0 && room.phase === 'VOTE' && !room.votes.has(botId)) {
+      const items = Array.from(scores, ([id, score]) => ({ id, score }));
+      const chosen = softmaxSample(items, personalityOf(p).voteTemp).id;
+      submitVote(room, botId, chosen);
+      return;
+    }
+  }
+
   let best: string[] = [];
   let bestScore = -1;
   for (const c of choices) {
@@ -273,6 +428,9 @@ export function doBotVote(room: Room, botId: string) {
   const chosen = bestScore > 0 ? pickRandom(best) : pickRandom(choices);
   submitVote(room, botId, chosen);
 }
+
+/** Pick a key with the highest value; random tie-break among near-ties. */
+// (Removed — replaced by `softmaxSample` driven by per-bot personality.)
 
 export function isBanned(room: Room, token: string): boolean {
   return room.bannedTokens.includes(token);
@@ -404,10 +562,27 @@ export function kickPlayer(
 // ---------- Timer-expiry auto-actions ----------
 
 /** CLUE expired: storyteller didn't act — pick a card + a curated clue. */
-export function expireClue(room: Room): boolean {
+export async function expireClue(room: Room): Promise<boolean> {
   if (room.phase !== 'CLUE') return false;
   const st = room.players[room.storytellerIdx];
   if (!st || st.hand.length === 0) return false;
+
+  if (isEmbeddingsAvailable()) {
+    const candidates = storytellerCandidates(st.hand).filter(c =>
+      hasCardEmbedding(c.cardId) && c.clues.length > 0,
+    );
+    if (candidates.length > 0) {
+      const ranked = await rankStorytellerMoves(candidates);
+      if (ranked.length && room.phase === 'CLUE' && room.players[room.storytellerIdx]?.id === st.id) {
+        // Humans who time out use the "balanced" default temp — close to
+        // the model's top pick with a touch of variety.
+        const pick = softmaxSample(ranked, personalityOf(st).storytellerTemp);
+        submitClue(room, st.id, pick.cardId, pick.clue);
+        return true;
+      }
+    }
+  }
+
   const curated = st.hand.filter(c => hasCardData(c));
   const cardId = pickRandom(curated.length ? curated : st.hand);
   submitClue(room, st.id, cardId, pickCardClue(cardId));

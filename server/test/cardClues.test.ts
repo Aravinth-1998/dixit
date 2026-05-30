@@ -1,9 +1,16 @@
-﻿import { describe, expect, it } from 'vitest';
+﻿import { describe, expect, it, beforeAll, afterAll } from 'vitest';
 import { scoreClueMatch, pickCardClue, CARD_CLUES } from '../src/cardClues.js';
+import { setEmbeddingsEnabled } from '../src/cardEmbeddings.js';
 import {
   addBot, addPlayer, createRoom, doBotClue, doBotSubmit, doBotVote, startGame,
   submitClue, submitCard,
 } from '../src/game.js';
+
+// These tests pin the bot to the curated tag-based scorer so they can assert
+// deterministic choices. The CLIP image-embedding path (if its data file is
+// present) is disabled for the duration of this suite.
+beforeAll(() => setEmbeddingsEnabled(false));
+afterAll(() => setEmbeddingsEnabled(true));
 
 const POOL = Array.from({ length: 50 }, (_, i) => `card-${String(i + 1).padStart(3, '0')}`);
 
@@ -88,7 +95,7 @@ describe('cardClues scoring', () => {
 });
 
 describe('bot uses curated clues for matching', () => {
-  it('storyteller bot picks a card with curated data and uses one of its clues', () => {
+  it('storyteller bot picks a card with curated data and uses one of its clues', async () => {
     const restore = setClues({
       'card-005': entry(['the lonely lighthouse', 'beacon at dusk'], ['lighthouse', 'sea']),
     });
@@ -101,14 +108,14 @@ describe('bot uses curated clues for matching', () => {
       room.storytellerIdx = room.players.findIndex(p => p.id === botId);
       const bot = room.players[room.storytellerIdx];
       bot.hand = ['card-001', 'card-005', 'card-010', 'card-011', 'card-012', 'card-013'];
-      doBotClue(room, botId);
+      await doBotClue(room, botId);
       expect(room.phase).toBe('SUBMIT');
       expect(room.storytellerCardId).toBe('card-005');
       expect(['the lonely lighthouse', 'beacon at dusk']).toContain(room.clue);
     } finally { restore(); }
   });
 
-  it('non-storyteller bot picks the hand card whose tags best match the clue', () => {
+  it('non-storyteller bot picks the hand card whose tags best match the clue', async () => {
     const restore = setClues({
       'card-001': entry(['dancing rabbits'], ['rabbit', 'birthday', 'cake', 'happy']),
       'card-007': entry(['the lonely lighthouse'], ['lighthouse', 'sea', 'beacon', 'keeper']),
@@ -126,12 +133,12 @@ describe('bot uses curated clues for matching', () => {
       submitClue(room, st.id, st.hand[0], 'lighthouse');
       const bot = room.players.find(p => p.id === botId)!;
       bot.hand = ['card-001', 'card-007', 'card-009'];
-      doBotSubmit(room, botId);
+      await doBotSubmit(room, botId);
       expect(room.submissions.get(botId)).toBe('card-007');
     } finally { restore(); }
   });
 
-  it('non-storyteller bot votes for the table card best matching the clue (not its own)', () => {
+  it('non-storyteller bot votes for the table card best matching the clue (not its own)', async () => {
     const restore = setClues({
       'card-030': entry(['lighthouse'], ['lighthouse', 'beacon', 'sea']),
       'card-031': entry(['birthday'], ['birthday', 'cake', 'party']),
@@ -154,7 +161,7 @@ describe('bot uses curated clues for matching', () => {
       submitCard(room, p1.id, 'card-031');
       submitCard(room, bot.id, 'card-032');
       expect(room.phase).toBe('VOTE');
-      doBotVote(room, botId);
+      await doBotVote(room, botId);
       expect(room.votes.get(botId)).toBe('card-030');
     } finally { restore(); }
   });

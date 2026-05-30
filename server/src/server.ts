@@ -159,14 +159,16 @@ function scheduleAutoExpire(room: Room) {
   room.phaseDeadline = Date.now() + sec * 1000;
   const timer = setTimeout(() => {
     phaseTimers.delete(room.code);
-    try {
-      if (room.phase === 'CLUE') expireClue(room);
-      else if (room.phase === 'SUBMIT') expireSubmit(room);
-      else if (room.phase === 'VOTE') expireVote(room);
-    } catch (e) {
-      console.warn('Auto-expire failed', e);
-    }
-    broadcast(room);
+    (async () => {
+      try {
+        if (room.phase === 'CLUE') await expireClue(room);
+        else if (room.phase === 'SUBMIT') expireSubmit(room);
+        else if (room.phase === 'VOTE') expireVote(room);
+      } catch (e) {
+        console.warn('Auto-expire failed', e);
+      }
+      broadcast(room);
+    })();
   }, sec * 1000);
   timer.unref?.();
   phaseTimers.set(room.code, timer);
@@ -205,17 +207,19 @@ function scheduleBotActions(room: Room) {
   cancelBotActions(room.code);
   const timers: NodeJS.Timeout[] = [];
   const jitter = (base: number) => base + Math.floor(Math.random() * 800);
-  const schedule = (ms: number, fn: () => void) => {
+  const schedule = (ms: number, fn: () => void | Promise<void>) => {
     const t = setTimeout(() => {
       // Skip if the room has moved on while we waited.
       const current = getRoom(room.code);
       if (current !== room) return;
-      try {
-        fn();
-        broadcast(room);
-      } catch {
-        /* swallow — broadcast won't run, but other timers may still fire */
-      }
+      (async () => {
+        try {
+          await fn();
+          broadcast(room);
+        } catch {
+          /* swallow — broadcast won't run, but other timers may still fire */
+        }
+      })();
     }, ms);
     t.unref?.();
     timers.push(t);

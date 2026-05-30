@@ -479,9 +479,9 @@ describe('kickPlayer', () => {
 });
 
 describe('Auto-expire (phase timer fires)', () => {
-  it('expireClue auto-picks a random storyteller card', () => {
+  it('expireClue auto-picks a random storyteller card', async () => {
     const { room } = startedRoom(3);
-    expireClue(room);
+    await expireClue(room);
     expect(room.phase).toBe('SUBMIT');
     // Clue is now picked from the card's curated clues (or a generic
     // fallback if the card has no entry yet); just verify it's non-empty.
@@ -625,20 +625,20 @@ describe('Bots', () => {
     expect(room.players[1].isHost).toBe(false);
   });
 
-  it('doBotClue advances to SUBMIT with a non-empty clue', () => {
+  it('doBotClue advances to SUBMIT with a non-empty clue', async () => {
     const { room } = mkRoom(3);
     room.players[1].isBot = true;
     startGame(room, CARD_POOL);
     // Force the bot (index 1) to be the storyteller.
     room.storytellerIdx = 1;
     const bot = room.players[1];
-    doBotClue(room, bot.id);
+    await doBotClue(room, bot.id);
     expect(room.phase).toBe('SUBMIT');
     expect(room.clue).toBeTruthy();
     expect(room.storytellerCardId).toBeTruthy();
   });
 
-  it('doBotVote never votes for own card', () => {
+  it('doBotVote never votes for own card', async () => {
     const { room } = mkRoom(3);
     room.players[1].isBot = true;
     startGame(room, CARD_POOL);
@@ -647,24 +647,24 @@ describe('Bots', () => {
     submitClue(room, st.id, st.hand[0], 'x');
     const bot = room.players[1];
     const human2 = room.players[2];
-    doBotSubmit(room, bot.id);
+    await doBotSubmit(room, bot.id);
     submitCard(room, human2.id, human2.hand[0]);
     expect(room.phase).toBe('VOTE');
-    doBotVote(room, bot.id);
+    await doBotVote(room, bot.id);
     const myCard = room.submissions.get(bot.id);
     expect(room.votes.get(bot.id)).not.toBe(myCard);
   });
 
-  it('full bot-driven round completes and assigns sane scores', () => {
+  it('full bot-driven round completes and assigns sane scores', async () => {
     const { room } = mkRoom(3);
     room.players[1].isBot = true;
     room.players[2].isBot = true;
     startGame(room, CARD_POOL);
     const human = room.players[0];
     submitClue(room, human.id, human.hand[0], 'a clue');
-    for (const p of room.players) if (p.isBot) doBotSubmit(room, p.id);
+    for (const p of room.players) if (p.isBot) await doBotSubmit(room, p.id);
     expect(room.phase).toBe('VOTE');
-    for (const p of room.players) if (p.isBot) doBotVote(room, p.id);
+    for (const p of room.players) if (p.isBot) await doBotVote(room, p.id);
     expect(room.phase).toBe('REVEAL');
     expect(room.history).toHaveLength(1);
     const totalDelta = Object.values(room.history[0].deltas).reduce((a, b) => a + b, 0);

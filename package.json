@@ -15,7 +15,10 @@
     "start": "node server/dist/server/src/server.js",
     "test": "vitest run",
     "test:watch": "vitest",
-    "clues:generate": "node scripts/generateClues.mjs"
+    "clues:generate": "node scripts/generateClues.mjs",
+    "clues:build": "node scripts/buildClueBank.mjs",
+    "embeddings:generate": "node scripts/generateEmbeddings.mjs",
+    "clues:demo": "node scripts/clueDemo.mjs"
   },
   "devDependencies": {
     "concurrently": "^9.0.1",

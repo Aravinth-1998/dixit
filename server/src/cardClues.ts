@@ -11,6 +11,37 @@ export interface CardEntry {
 
 export type CardCluesMap = Record<string, CardEntry>;
 
+// NOTE: STOP_WORDS / stem / tokenize must be declared BEFORE `load()` is
+// called (the `const CARD_CLUES = load()` line below runs at import time
+// and reaches tokenize via normalizeEntry → tokenize).
+const STOP_WORDS = new Set([
+  'a','an','the','and','or','but','of','to','in','on','at','for','with','from',
+  'is','are','was','were','be','been','being','it','its','this','that','these',
+  'those','my','your','his','her','their','our','as','by','into','over','under',
+  'about','between','through','than','then','so','too','very','just','also',
+  'i','you','we','they','he','she','me','us','them',
+]);
+
+/** Light stemming: collapse common English suffixes so "beasts" -> "beast". */
+function stem(word: string): string {
+  let w = word;
+  if (w.length > 4 && w.endsWith('ies')) return w.slice(0, -3) + 'y';
+  if (w.length > 4 && w.endsWith('ing')) return w.slice(0, -3);
+  if (w.length > 4 && w.endsWith('ed'))  return w.slice(0, -2);
+  if (w.length > 3 && w.endsWith('es'))  return w.slice(0, -2);
+  if (w.length > 3 && w.endsWith('s'))   return w.slice(0, -1);
+  return w;
+}
+
+function tokenize(s: string): string[] {
+  return s
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter(t => t.length > 1 && !STOP_WORDS.has(t))
+    .map(stem);
+}
+
 /**
  * Per-card data populated by `scripts/generateClues.mjs` (vision API) into
  * `server/data/cardClues.json`. We resolve that file at runtime so it can be
@@ -81,33 +112,6 @@ export const GENERIC_CLUES = [
   'longing', 'quiet', 'curious', 'a secret', 'awakening', 'shadows',
 ];
 
-const STOP_WORDS = new Set([
-  'a','an','the','and','or','but','of','to','in','on','at','for','with','from',
-  'is','are','was','were','be','been','being','it','its','this','that','these',
-  'those','my','your','his','her','their','our','as','by','into','over','under',
-  'about','between','through','than','then','so','too','very','just','also',
-  'i','you','we','they','he','she','me','us','them',
-]);
-
-/** Light stemming: collapse common English suffixes so "beasts" -> "beast". */
-function stem(word: string): string {
-  let w = word;
-  if (w.length > 4 && w.endsWith('ies')) return w.slice(0, -3) + 'y';
-  if (w.length > 4 && w.endsWith('ing')) return w.slice(0, -3);
-  if (w.length > 4 && w.endsWith('ed'))  return w.slice(0, -2);
-  if (w.length > 3 && w.endsWith('es'))  return w.slice(0, -2);
-  if (w.length > 3 && w.endsWith('s'))   return w.slice(0, -1);
-  return w;
-}
-
-function tokenize(s: string): string[] {
-  return s
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, ' ')
-    .split(/\s+/)
-    .filter(t => t.length > 1 && !STOP_WORDS.has(t))
-    .map(stem);
-}
 
 /**
  * Score how well a free-form clue matches a card. Heavily weights matches
