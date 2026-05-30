@@ -15,8 +15,12 @@ import {
   ALLOWED_REACTIONS,
 } from '../../shared/src/types.js';
 import {
+  addBot,
   addPlayer,
   createRoom,
+  doBotClue,
+  doBotSubmit,
+  doBotVote,
   expireClue,
   expireSubmit,
   expireVote,
@@ -116,6 +120,7 @@ function scheduleLobbyEviction(code: string, token: string) {
     room.players = room.players.filter(p => p.id !== token);
     if (room.players.length === 0) {
       clearPhaseTimer(code);
+      cancelBotActions(code);
       deleteRoom(code);
       return;
     }
@@ -173,10 +178,69 @@ function broadcast(room: Room) {
   // We do this here so every code path that mutates state + broadcasts
   // automatically keeps the schedule in sync.
   scheduleAutoExpire(room);
+  // Drive any bot players that need to act in the current phase.
+  scheduleBotActions(room);
   for (const p of room.players) {
     if (!p.socketId) continue;
     io.to(p.socketId).emit('state', privateState(room, p.id));
   }
+}
+
+// ---------- Bot driver ----------
+//
+// Each room has a set of scheduled bot actions. Whenever the room broadcasts
+// (i.e. state changed), we cancel any previously-pending bot timers and
+// schedule fresh ones based on whose turn it now is. Bots act with a small
+// randomized delay so the game feels alive instead of instant.
+
+const botActionTimers = new Map<string, NodeJS.Timeout[]>();
+
+function cancelBotActions(code: string) {
+  const ts = botActionTimers.get(code);
+  if (ts) for (const t of ts) clearTimeout(t);
+  botActionTimers.set(code, []);
+}
+
+function scheduleBotActions(room: Room) {
+  cancelBotActions(room.code);
+  const timers: NodeJS.Timeout[] = [];
+  const jitter = (base: number) => base + Math.floor(Math.random() * 800);
+  const schedule = (ms: number, fn: () => void) => {
+    const t = setTimeout(() => {
+      // Skip if the room has moved on while we waited.
+      const current = getRoom(room.code);
+      if (current !== room) return;
+      try {
+        fn();
+        broadcast(room);
+      } catch {
+        /* swallow — broadcast won't run, but other timers may still fire */
+      }
+    }, ms);
+    t.unref?.();
+    timers.push(t);
+  };
+
+  if (room.phase === 'CLUE') {
+    const st = room.players[room.storytellerIdx];
+    if (st?.isBot) schedule(jitter(1500), () => doBotClue(room, st.id));
+  } else if (room.phase === 'SUBMIT') {
+    for (const p of room.players) {
+      if (!p.isBot) continue;
+      if (room.players[room.storytellerIdx]?.id === p.id) continue;
+      if (room.submissions.has(p.id)) continue;
+      schedule(jitter(1200), () => doBotSubmit(room, p.id));
+    }
+  } else if (room.phase === 'VOTE') {
+    for (const p of room.players) {
+      if (!p.isBot) continue;
+      if (room.players[room.storytellerIdx]?.id === p.id) continue;
+      if (room.votes.has(p.id)) continue;
+      schedule(jitter(1400), () => doBotVote(room, p.id));
+    }
+  }
+
+  botActionTimers.set(room.code, timers);
 }
 
 function ok<T>(data: T) {
@@ -276,6 +340,7 @@ io.on('connection', socket => {
       // If host left, promote next; if empty, delete room.
       if (room.players.length === 0) {
         clearPhaseTimer(room.code);
+        cancelBotActions(room.code);
         deleteRoom(room.code);
         return;
       }
@@ -374,6 +439,22 @@ io.on('connection', socket => {
       }
     })
   );
+
+  socket.on('addBot', ({ code }, cb) => {
+    try {
+      const idx = socketIndex.get(socket.id);
+      if (!idx || idx.code !== code.toUpperCase()) return cb(err('Not in room'));
+      const room = getRoom(code);
+      if (!room) return cb(err('Room not found'));
+      const player = room.players.find(p => p.id === idx.token);
+      if (!player?.isHost) return cb(err('Only host can add bots'));
+      const botId = addBot(room);
+      cb(ok({ playerId: botId }));
+      broadcast(room);
+    } catch (e: any) {
+      cb(err(e.message ?? 'Failed to add bot'));
+    }
+  });
 
   // Lightweight broadcast — does not mutate room state, no rebroadcast needed.
   socket.on('react', ({ code, emoji }, cb) => {

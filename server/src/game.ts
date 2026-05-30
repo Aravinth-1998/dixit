@@ -26,6 +26,8 @@ export interface Player {
   connected: boolean;
   hasSubmitted: boolean;
   hasVoted: boolean;
+  /** True for AI-controlled filler players. */
+  isBot?: boolean;
 }
 
 export interface Room {
@@ -162,6 +164,92 @@ export function addPlayer(room: Room, name: string): string {
   return token;
 }
 
+// ---------- Bots ----------
+
+const BOT_NAME_POOL = [
+  'Nova', 'Sage', 'Wren', 'Echo', 'Pip', 'Loki',
+  'Juno', 'Atlas', 'Zephyr', 'Iris', 'Milo', 'Cleo',
+];
+
+const BOT_CLUES = [
+  'mystery', 'dreams', 'silence', 'a journey', 'lost', 'discovery',
+  'whispers', 'freedom', 'home', 'forgotten', 'the dance', 'flight',
+  'wonder', 'echoes', 'beneath the surface', 'a memory', 'something brave',
+  'longing', 'quiet', 'curious', 'a secret', 'awakening', 'shadows',
+  'rebellion', 'transformation', 'gentle', 'distant', 'a reflection',
+  'almost', 'tomorrow', 'far away', 'the question', 'small joys',
+];
+
+function uniqueBotName(room: Room): string {
+  const used = new Set(room.players.map(p => p.name.toLowerCase()));
+  const shuffled = shuffle(BOT_NAME_POOL.slice());
+  for (const n of shuffled) {
+    if (!used.has(n.toLowerCase())) return n;
+  }
+  // Fallback if the pool runs out — append a counter.
+  for (let i = 1; i < 1000; i++) {
+    const candidate = `Bot ${i}`;
+    if (!used.has(candidate.toLowerCase())) return candidate;
+  }
+  return `Bot ${randomUUID().slice(0, 4)}`;
+}
+
+/** Add an AI bot to the lobby. Returns the bot's player id. */
+export function addBot(room: Room): string {
+  if (room.phase !== 'LOBBY') throw new Error('Bots can only be added in lobby');
+  if (room.players.length >= room.maxPlayers) throw new Error('Room is full');
+  const token = randomUUID();
+  room.players.push({
+    id: token,
+    socketId: null,
+    name: uniqueBotName(room),
+    hand: [],
+    score: 0,
+    isHost: false,
+    connected: true,        // bots are always "connected" so they're counted
+    hasSubmitted: false,
+    hasVoted: false,
+    isBot: true,
+  });
+  return token;
+}
+
+function pickRandom<T>(arr: T[]): T {
+  return arr[Math.floor(Math.random() * arr.length)];
+}
+
+/** Bot storyteller picks a random card and a random clue. */
+export function doBotClue(room: Room, botId: string) {
+  const p = room.players.find(pp => pp.id === botId);
+  if (!p || !p.isBot) return;
+  if (room.phase !== 'CLUE') return;
+  if (room.players[room.storytellerIdx]?.id !== botId) return;
+  if (p.hand.length === 0) return;
+  submitClue(room, botId, pickRandom(p.hand), pickRandom(BOT_CLUES));
+}
+
+/** Bot non-storyteller picks a random hand card to submit. */
+export function doBotSubmit(room: Room, botId: string) {
+  const p = room.players.find(pp => pp.id === botId);
+  if (!p || !p.isBot) return;
+  if (room.phase !== 'SUBMIT') return;
+  if (room.submissions.has(botId)) return;
+  if (p.hand.length === 0) return;
+  submitCard(room, botId, pickRandom(p.hand));
+}
+
+/** Bot non-storyteller votes for a random table card that isn't its own. */
+export function doBotVote(room: Room, botId: string) {
+  const p = room.players.find(pp => pp.id === botId);
+  if (!p || !p.isBot) return;
+  if (room.phase !== 'VOTE') return;
+  if (room.votes.has(botId)) return;
+  const myCard = room.submissions.get(botId);
+  const choices = room.tableOrder.filter(c => c !== myCard);
+  if (choices.length === 0) return;
+  submitVote(room, botId, pickRandom(choices));
+}
+
 export function isBanned(room: Room, token: string): boolean {
   return room.bannedTokens.includes(token);
 }
@@ -190,10 +278,13 @@ export function setTimers(room: Room, t: Partial<TimerConfig>) {
 export function promoteHostIfNeeded(room: Room): boolean {
   if (room.players.length === 0) return false;
   const currentHost = room.players.find(p => p.isHost);
-  if (currentHost && currentHost.connected) return false;
-  // Prefer first connected player; otherwise just the first player.
+  if (currentHost && currentHost.connected && !currentHost.isBot) return false;
+  // Prefer a connected human first — bots can fill seats but never run the
+  // game. Fall back to any connected player, then to the first player.
   const next =
-    room.players.find(p => p.connected) ?? room.players[0];
+    room.players.find(p => p.connected && !p.isBot) ??
+    room.players.find(p => p.connected) ??
+    room.players[0];
   if (!next) return false;
   if (currentHost === next) return false;
   for (const p of room.players) p.isHost = false;
@@ -287,10 +378,6 @@ export function kickPlayer(
 }
 
 // ---------- Timer-expiry auto-actions ----------
-
-function pickRandom<T>(arr: T[]): T {
-  return arr[Math.floor(Math.random() * arr.length)];
-}
 
 /** CLUE expired: storyteller didn't act — pick a random card + filler clue. */
 export function expireClue(room: Room): boolean {
@@ -572,6 +659,7 @@ function publicPlayer(p: Player): PublicPlayer {
     connected: p.connected,
     hasSubmitted: p.hasSubmitted,
     hasVoted: p.hasVoted,
+    isBot: p.isBot,
   };
 }
 

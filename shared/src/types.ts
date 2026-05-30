@@ -11,6 +11,8 @@ export interface PublicPlayer {
   // round-state flags (visible to all):
   hasSubmitted?: boolean;
   hasVoted?: boolean;
+  /** AI bot filler — never has a real socket. */
+  isBot?: boolean;
 }
 
 export interface TableCard {
@@ -122,6 +124,11 @@ export interface ClientToServer {
   kickPlayer: (
     p: { code: string; playerId: string },
     cb: (res: Result<{}>) => void
+  ) => void;
+  /** Host-only: add an AI bot to fill an empty seat (lobby only). */
+  addBot: (
+    p: { code: string },
+    cb: (res: Result<{ playerId: string }>) => void
   ) => void;
   /** Broadcast an emoji reaction to everyone in the room. */
   react: (

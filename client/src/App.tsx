@@ -646,6 +646,7 @@ function PlayersBar({
             <div className="pcard-row">
               <Avatar player={p} size={22} />
               {p.isHost && <span className="pcard-role" title="Host">👑</span>}
+              {p.isBot && <span className="pcard-role" title="AI bot">🤖</span>}
               {isStoryteller && <span className="pcard-role" title="Storyteller">🎙️</span>}
               <span className="pcard-name" title={p.name}>{p.name}</span>
               {isDone && <span className="pcard-done" title="Ready">✓</span>}
@@ -685,9 +686,26 @@ function Lobby({
   const full = state.players.length === state.maxPlayers;
   const allConnected = state.players.every(p => p.connected);
   const canStart = full && allConnected;
+  const seatsLeft = state.maxPlayers - state.players.length;
   const start = async () => {
     try {
       await callEmit('startGame', { code: state.code });
+    } catch (e: any) {
+      setError(e.message);
+    }
+  };
+  const addOneBot = async () => {
+    try {
+      await callEmit('addBot', { code: state.code });
+    } catch (e: any) {
+      setError(e.message);
+    }
+  };
+  const fillWithBots = async () => {
+    try {
+      for (let i = 0; i < seatsLeft; i++) {
+        await callEmit('addBot', { code: state.code });
+      }
     } catch (e: any) {
       setError(e.message);
     }
@@ -700,6 +718,18 @@ function Lobby({
         first to <b>{state.winScore}</b> points wins.
         Share the room code or invite link.
       </p>
+      {state.you.isHost && !full && (
+        <div className="row" style={{ marginBottom: 10 }}>
+          <button className="btn ghost" onClick={addOneBot}>
+            🤖 Add bot
+          </button>
+          {seatsLeft > 1 && (
+            <button className="btn ghost" onClick={fillWithBots}>
+              Fill {seatsLeft} seat{seatsLeft === 1 ? '' : 's'} with bots
+            </button>
+          )}
+        </div>
+      )}
       {state.you.isHost ? (
         <button className="btn" disabled={!canStart} onClick={start}>
           {!full

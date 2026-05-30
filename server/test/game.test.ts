@@ -3,9 +3,13 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  addBot,
   addPlayer,
   createRoom,
   createDeck,
+  doBotClue,
+  doBotSubmit,
+  doBotVote,
   expireClue,
   expireSubmit,
   expireVote,
@@ -580,6 +584,99 @@ describe('Deck exhaustion', () => {
       nextRound(room);
     }
     expect(room.phase).toBe('GAME_OVER');
+  });
+});
+
+describe('Bots', () => {
+  it('addBot adds a connected bot player in lobby', () => {
+    // 4-seat lobby, fill 3 humans then add a bot in the 4th seat.
+    const { room } = createRoom('B', 'h', 4, CARD_POOL);
+    addPlayer(room, 'p2');
+    addPlayer(room, 'p3');
+    const botId = addBot(room);
+    const bot = room.players.find(p => p.id === botId)!;
+    expect(bot.isBot).toBe(true);
+    expect(bot.connected).toBe(true);
+    expect(bot.socketId).toBeNull();
+    expect(bot.name.length).toBeGreaterThan(0);
+  });
+  it('addBot refuses to exceed maxPlayers', () => {
+    const { room } = mkRoom(3); // already full
+    expect(() => addBot(room)).toThrow(/full/);
+  });
+  it('addBot refuses outside lobby', () => {
+    const { room } = startedRoom(3);
+    expect(() => addBot(room)).toThrow(/lobby/);
+  });
+
+  it('promoteHostIfNeeded prefers humans over bots', () => {
+    // 3 players: [host (human), bot, human]. Host disconnects → expect the
+    // human (index 2) to be promoted, not the bot (index 1).
+    const { room } = mkRoom(3);
+    room.players[1].isBot = true;
+    room.players[0].connected = false;
+    room.players[0].isHost = false;
+    const changed = promoteHostIfNeeded(room);
+    expect(changed).toBe(true);
+    expect(room.players[2].isHost).toBe(true);
+    expect(room.players[1].isHost).toBe(false);
+  });
+
+  it('doBotClue advances to SUBMIT with a non-empty clue', () => {
+    const { room } = mkRoom(3);
+    room.players[1].isBot = true;
+    startGame(room, CARD_POOL);
+    // Force the bot (index 1) to be the storyteller.
+    room.storytellerIdx = 1;
+    const bot = room.players[1];
+    doBotClue(room, bot.id);
+    expect(room.phase).toBe('SUBMIT');
+    expect(room.clue).toBeTruthy();
+    expect(room.storytellerCardId).toBeTruthy();
+  });
+
+  it('doBotVote never votes for own card', () => {
+    const { room } = mkRoom(3);
+    room.players[1].isBot = true;
+    startGame(room, CARD_POOL);
+    // Storyteller defaults to index 0 (the human host). Bot at 1, human at 2.
+    const st = room.players[0];
+    submitClue(room, st.id, st.hand[0], 'x');
+    const bot = room.players[1];
+    const human2 = room.players[2];
+    doBotSubmit(room, bot.id);
+    submitCard(room, human2.id, human2.hand[0]);
+    expect(room.phase).toBe('VOTE');
+    doBotVote(room, bot.id);
+    const myCard = room.submissions.get(bot.id);
+    expect(room.votes.get(bot.id)).not.toBe(myCard);
+  });
+
+  it('full bot-driven round completes and assigns sane scores', () => {
+    const { room } = mkRoom(3);
+    room.players[1].isBot = true;
+    room.players[2].isBot = true;
+    startGame(room, CARD_POOL);
+    const human = room.players[0];
+    submitClue(room, human.id, human.hand[0], 'a clue');
+    for (const p of room.players) if (p.isBot) doBotSubmit(room, p.id);
+    expect(room.phase).toBe('VOTE');
+    for (const p of room.players) if (p.isBot) doBotVote(room, p.id);
+    expect(room.phase).toBe('REVEAL');
+    expect(room.history).toHaveLength(1);
+    const totalDelta = Object.values(room.history[0].deltas).reduce((a, b) => a + b, 0);
+    expect(totalDelta).toBeGreaterThanOrEqual(0);
+  });
+
+  it('bot kicked like any other player', () => {
+    const { room } = createRoom('B', 'h', 4, CARD_POOL);
+    addPlayer(room, 'p2');
+    addPlayer(room, 'p3');
+    const botId = addBot(room);
+    const result = kickPlayer(room, botId);
+    expect(result).toBe('removed');
+    expect(room.players.find(p => p.id === botId)).toBeUndefined();
+    expect(isBanned(room, botId)).toBe(true);
   });
 });
 
