@@ -19,15 +19,38 @@ if (clues.length === 0) {
 function cosine(a, b) { let s = 0; for (let i = 0; i < a.length; i++) s += a[i] * b[i]; return s; }
 function norm(v) { let s = 0; for (const x of v) s += x*x; const n = Math.sqrt(s) || 1; return v.map(x => x/n); }
 
-const MODEL = data._model || 'Xenova/clip-vit-base-patch32';
+const MODEL = data._model || 'Xenova/clip-vit-large-patch14';
 console.log('Loading CLIP text encoder…');
 const tokenizer = await AutoTokenizer.from_pretrained(MODEL);
 const textModel = await CLIPTextModelWithProjection.from_pretrained(MODEL, { quantized: true });
 
-for (const clue of clues) {
-  const inputs = tokenizer(clue, { padding: true, truncation: true });
+// Same prompt-ensemble templates as server/src/cardEmbeddings.ts
+const TEMPLATES = [
+  '{c}',
+  'a picture of {c}',
+  'an image of {c}',
+  'a painting of {c}',
+  'a scene showing {c}',
+  'this is {c}',
+  'the theme is {c}',
+  'something about {c}',
+];
+
+async function embedClueEnsemble(clue) {
+  const variants = TEMPLATES.map(t => t.replace('{c}', clue));
+  const inputs = tokenizer(variants, { padding: true, truncation: true });
   const { text_embeds } = await textModel(inputs);
-  const tv = norm(Array.from(text_embeds.data));
+  const dim = text_embeds.dims[1];
+  const sum = new Array(dim).fill(0);
+  for (let i = 0; i < variants.length; i++) {
+    const slice = norm(Array.from(text_embeds.data.slice(i * dim, (i + 1) * dim)));
+    for (let j = 0; j < dim; j++) sum[j] += slice[j];
+  }
+  return norm(sum.map(x => x / variants.length));
+}
+
+for (const clue of clues) {
+  const tv = await embedClueEnsemble(clue);
   const ranked = Object.entries(data.cards)
     .map(([id, v]) => ({ id, score: cosine(tv, v) }))
     .sort((a, b) => b.score - a.score);

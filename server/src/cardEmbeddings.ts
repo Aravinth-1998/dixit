@@ -121,6 +121,24 @@ function normalize(vec: number[]): number[] {
   return out;
 }
 
+/**
+ * CLIP prompt-ensemble templates. Single bare words ("game", "fire", "hope")
+ * often miss obvious matches because CLIP was trained on captions like
+ * "a photo of …" — embedding several rephrasings and averaging the
+ * resulting vectors gives a noticeably more robust query, especially for
+ * abstract or single-word clues. Standard technique from the CLIP paper.
+ */
+const PROMPT_TEMPLATES = [
+  '{c}',
+  'a picture of {c}',
+  'an image of {c}',
+  'a painting of {c}',
+  'a scene showing {c}',
+  'this is {c}',
+  'the theme is {c}',
+  'something about {c}',
+];
+
 /** Encode a clue string with CLIP text encoder. Returns null if unavailable. */
 export async function embedClue(clue: string): Promise<number[] | null> {
   const key = clue.trim().toLowerCase();
@@ -129,9 +147,23 @@ export async function embedClue(clue: string): Promise<number[] | null> {
   if (cached) return cached;
   const enc = await getTextEncoder();
   if (!enc) return null;
-  const raw = await enc.encode(key);
-  if (!raw) return null;
-  const vec = normalize(raw);
+
+  // Prompt-ensemble: embed several rephrasings, average, renormalize.
+  // We always ensemble (cheap, cached per clue) — for longer phrases the
+  // gain is small but never hurts; for single words the gain is large.
+  const variants = PROMPT_TEMPLATES.map(t => t.replace('{c}', key));
+  const vectors: number[][] = [];
+  for (const v of variants) {
+    const raw = await enc.encode(v);
+    if (raw) vectors.push(normalize(raw));
+  }
+  if (vectors.length === 0) return null;
+  const dim = vectors[0].length;
+  const avg = new Array(dim).fill(0);
+  for (const v of vectors) for (let i = 0; i < dim; i++) avg[i] += v[i];
+  for (let i = 0; i < dim; i++) avg[i] /= vectors.length;
+  const vec = normalize(avg);
+
   if (clueCache.size >= CLUE_CACHE_MAX) {
     const firstKey = clueCache.keys().next().value;
     if (firstKey !== undefined) clueCache.delete(firstKey);

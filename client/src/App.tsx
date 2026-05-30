@@ -184,7 +184,14 @@ export default function App() {
   }, [state]);
 
   const onLeave = () => {
-    if (state) emit('leaveRoom', { code: state.code });
+    if (state) {
+      const mid = state.phase !== 'LOBBY' && state.phase !== 'GAME_OVER';
+      const msg = mid
+        ? 'Leave the match? Your seat will stay open for you to rejoin until the round ends.'
+        : 'Leave this room?';
+      if (!window.confirm(msg)) return;
+      emit('leaveRoom', { code: state.code });
+    }
     saveSession(null);
     setState(null);
   };

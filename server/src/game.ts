@@ -60,18 +60,24 @@ export interface BotPersonality {
  * Personality presets. Each new bot is assigned one at random in `addBot`,
  * so a table with 3 bots typically contains 3 different "playing styles" —
  * they'll often pick / vote differently from each other on the same clue.
+ *
+ * NOTE on temperatures: voting is competitive (bots want to earn points by
+ * correctly identifying the storyteller's card), so `voteTemp` is held very
+ * low for all personalities — bots should overwhelmingly pick the model's
+ * top-ranked card. Variety is concentrated in `submitTemp` and
+ * `storytellerTemp`, where surprising / playful choices add fun.
  */
 export const BOT_PERSONALITIES: BotPersonality[] = [
-  // Methodical: almost always argmax. Easy to read, rarely surprises.
-  { label: 'careful',  submitTemp: 0.004, voteTemp: 0.004, storytellerTemp: 0.005 },
+  // Methodical: almost always argmax everywhere.
+  { label: 'careful',  submitTemp: 0.004, voteTemp: 0.003, storytellerTemp: 0.005 },
   // Solid default — picks the best most of the time but sometimes the 2nd.
-  { label: 'balanced', submitTemp: 0.012, voteTemp: 0.012, storytellerTemp: 0.012 },
-  // Loose interpreter — happy to pick a card that's "close enough".
-  { label: 'playful',  submitTemp: 0.025, voteTemp: 0.025, storytellerTemp: 0.025 },
-  // Wild card — often picks middling matches, fun chaos.
-  { label: 'chaotic',  submitTemp: 0.050, voteTemp: 0.050, storytellerTemp: 0.040 },
+  { label: 'balanced', submitTemp: 0.012, voteTemp: 0.004, storytellerTemp: 0.012 },
+  // Loose interpreter — happy to pick a creative card to submit, but votes sharp.
+  { label: 'playful',  submitTemp: 0.025, voteTemp: 0.006, storytellerTemp: 0.025 },
+  // Wild card — chaotic on submissions, still tries to win when voting.
+  { label: 'chaotic',  submitTemp: 0.050, voteTemp: 0.010, storytellerTemp: 0.040 },
   // Loves abstract clues — picks creative storyteller clues, decent matcher.
-  { label: 'poet',     submitTemp: 0.015, voteTemp: 0.015, storytellerTemp: 0.050 },
+  { label: 'poet',     submitTemp: 0.015, voteTemp: 0.005, storytellerTemp: 0.050 },
 ];
 
 function randomPersonality(): BotPersonality {
