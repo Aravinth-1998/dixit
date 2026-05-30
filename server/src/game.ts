@@ -15,7 +15,7 @@ import {
   RoundReveal,
   TimerConfig,
 } from '../../shared/src/types.js';
-import { CARD_CLUES, pickCardClue, scoreClueMatch } from './cardClues.js';
+import { CARD_CLUES, pickCardClue, scoreClueMatch, hasCardData } from './cardClues.js';
 
 export interface Player {
   id: string;            // playerToken
@@ -219,7 +219,7 @@ export function doBotClue(room: Room, botId: string) {
   if (room.players[room.storytellerIdx]?.id !== botId) return;
   if (p.hand.length === 0) return;
   // Prefer hand cards we actually have curated clues for; fall back to any.
-  const curated = p.hand.filter(c => (CARD_CLUES[c]?.length ?? 0) > 0);
+  const curated = p.hand.filter(c => hasCardData(c));
   const cardId = pickRandom(curated.length ? curated : p.hand);
   submitClue(room, botId, cardId, pickCardClue(cardId));
 }
@@ -408,7 +408,7 @@ export function expireClue(room: Room): boolean {
   if (room.phase !== 'CLUE') return false;
   const st = room.players[room.storytellerIdx];
   if (!st || st.hand.length === 0) return false;
-  const curated = st.hand.filter(c => (CARD_CLUES[c]?.length ?? 0) > 0);
+  const curated = st.hand.filter(c => hasCardData(c));
   const cardId = pickRandom(curated.length ? curated : st.hand);
   submitClue(room, st.id, cardId, pickCardClue(cardId));
   return true;

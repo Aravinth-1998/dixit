@@ -65,18 +65,49 @@ if (existsSync(OUT_FILE)) {
   try { existing = JSON.parse(readFileSync(OUT_FILE, 'utf-8')); } catch { existing = {}; }
 }
 
-const todo = cards.filter(c => FORCE || !Array.isArray(existing[c]) || existing[c].length < 5);
+const todo = cards.filter(c => {
+  if (FORCE) return true;
+  const e = existing[c];
+  if (!e) return true;
+  if (Array.isArray(e)) return true; // legacy array → upgrade to {clues,tags}
+  return !Array.isArray(e.clues) || e.clues.length < 5 || !Array.isArray(e.tags) || e.tags.length < 10;
+});
 console.log(`Cards total: ${cards.length}. To process: ${todo.length}. Already done: ${cards.length - todo.length}.`);
 
 // ---- prompt ----
-const PROMPT = `You are helping seed clues for the board game Dixit.
-Look at this dreamlike illustration card and produce EXACTLY 5 short clues a
-storyteller might say to evoke this image. Each clue should be 1-5 words,
-poetic and evocative (Dixit style), and clearly tied to something visible or
-strongly implied in the image (objects, mood, action, setting, metaphor).
-Avoid generic words like "card" or "image" or "Dixit". Avoid quotes.
-Return ONLY a JSON array of 5 strings, nothing else. Example:
-["the lonely lighthouse","guarded by the sea","a beacon at dusk","watching the storm","keeper of secrets"]`;
+const PROMPT = `You are helping seed a Dixit-style card-matching bot.
+
+Look carefully at this dreamlike illustration card and respond with a SINGLE
+JSON object (no prose, no markdown, no code fences) with EXACTLY these keys:
+
+{
+  "clues": [5 strings],   // short evocative storyteller lines a player might say
+  "tags":  [20-30 strings] // single lowercase WORDS describing concepts in the image
+}
+
+Rules for "clues":
+- 1 to 5 words each, poetic / metaphorical / Dixit-flavoured.
+- Each clue must be clearly tied to something visible or strongly implied in the image.
+- Avoid the words "card", "image", "Dixit".
+
+Rules for "tags" (THIS IS WHAT THE BOT USES TO MATCH OTHER PLAYERS' CLUES — be generous):
+- Lowercase single words only (no spaces, no phrases).
+- Include literally-visible objects (e.g. "lighthouse", "trumpet", "book").
+- Include the CATEGORY/SYNONYMS of each major element (e.g. for a monster card include:
+  "beast", "monster", "creature", "demon", "fangs", "claws", "predator", "shadow", "fear",
+  "danger", "nightmare", "darkness").
+- Include mood / emotion words (e.g. "lonely", "joyful", "mysterious", "peaceful").
+- Include archetypes / themes (e.g. "journey", "freedom", "love", "death", "music", "magic").
+- Include 2-3 colour or setting words if striking (e.g. "blue", "forest", "night", "underwater").
+- 20-30 tags total. The more genuine concepts you cover, the better.
+
+Example for an image of a fanged blue monster looming over a tiny person on a leaf:
+{
+  "clues": ["the beast awakens","tiny against the giant","caught by the monster","a hungry shadow","fear in the wild"],
+  "tags": ["beast","monster","creature","demon","fangs","claws","predator","giant","huge","tiny","small","leaf","wilderness","blue","fear","danger","threat","nightmare","shadow","darkness","vulnerable","prey","hunt","scary","wild"]
+}
+
+Now produce the JSON for THIS card. Respond with ONLY the JSON object.`;
 
 // ---- API callers ----
 async function callGemini(b64) {
@@ -110,7 +141,7 @@ async function callOpenAI(b64) {
     messages: [{
       role: 'user',
       content: [
-        { type: 'text', text: PROMPT + '\nReturn JSON like {"clues":[...5 strings...]}.' },
+        { type: 'text', text: PROMPT },
         { type: 'image_url', image_url: { url: `data:image/${ext === 'jpg' ? 'jpeg' : ext};base64,${b64}` } },
       ],
     }],
@@ -125,22 +156,38 @@ async function callOpenAI(b64) {
   return data?.choices?.[0]?.message?.content ?? '';
 }
 
-function parseClues(txt) {
+function parseEntry(txt) {
   if (!txt) return null;
-  // Strip code fences if any.
   let t = txt.trim().replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
   let parsed;
   try { parsed = JSON.parse(t); }
   catch {
-    // Try to extract first JSON array
-    const m = /\[[\s\S]*\]/.exec(t);
+    const m = /\{[\s\S]*\}/.exec(t) || /\[[\s\S]*\]/.exec(t);
     if (!m) return null;
     try { parsed = JSON.parse(m[0]); } catch { return null; }
   }
-  let arr = Array.isArray(parsed) ? parsed : parsed?.clues;
-  if (!Array.isArray(arr)) return null;
-  arr = arr.map(s => String(s).trim()).filter(Boolean).slice(0, 5);
-  return arr.length >= 3 ? arr : null;
+  // Accept either { clues, tags } or a bare array (legacy clues-only).
+  let clues, tags;
+  if (Array.isArray(parsed)) {
+    clues = parsed;
+    tags = [];
+  } else if (parsed && typeof parsed === 'object') {
+    clues = parsed.clues;
+    tags = parsed.tags;
+  }
+  clues = Array.isArray(clues)
+    ? clues.map(s => String(s).trim()).filter(Boolean).slice(0, 5)
+    : [];
+  tags = Array.isArray(tags)
+    ? Array.from(new Set(
+        tags
+          .map(s => String(s).toLowerCase().trim())
+          .map(s => s.replace(/[^a-z0-9]/g, ''))
+          .filter(s => s.length >= 2 && s.length <= 24),
+      )).slice(0, 40)
+    : [];
+  if (clues.length < 3) return null;
+  return { clues, tags };
 }
 
 async function processCard(cardId) {
@@ -151,9 +198,9 @@ async function processCard(cardId) {
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
       const txt = PROVIDER === 'gemini' ? await callGemini(b64) : await callOpenAI(b64);
-      const clues = parseClues(txt);
-      if (clues) return clues;
-      lastErr = new Error('Could not parse clues from: ' + txt.slice(0, 200));
+      const entry = parseEntry(txt);
+      if (entry) return entry;
+      lastErr = new Error('Could not parse entry from: ' + txt.slice(0, 200));
     } catch (e) {
       lastErr = e;
       // Backoff on rate limits
@@ -193,11 +240,11 @@ async function worker(id) {
   while (cursor < todo.length) {
     const card = todo[cursor++];
     try {
-      const clues = await processCard(card);
-      existing[card] = clues;
+      const entry = await processCard(card);
+      existing[card] = entry;
       done++;
       saveSoon();
-      console.log(`[${done + failed}/${todo.length}] ${card}: ${clues.join(' | ')}`);
+      console.log(`[${done + failed}/${todo.length}] ${card}: tags=${entry.tags.slice(0, 8).join(',')}${entry.tags.length > 8 ? '…' : ''} | ${entry.clues[0]}`);
     } catch (e) {
       failed++;
       console.warn(`[${done + failed}/${todo.length}] ${card} FAILED: ${e.message}`);

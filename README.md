@@ -60,14 +60,30 @@ Each player's session is stored in `localStorage`. If your phone screen locks or
 
 ## AI bots & per-card clues
 
-Bots can fill empty seats. Their behaviour is driven by a **per-card clue
-dictionary** at `server/data/cardClues.json` (5 evocative clues per card image):
+Bots can fill empty seats. Their behaviour is driven by a **per-card
+dictionary** at `server/data/cardClues.json`. For every card image the
+generator stores two things:
 
-- **As storyteller**, a bot picks a hand card that has curated clues and says one of them.
-- **As a non-storyteller**, a bot scores every card in its hand against the storyteller's clue (token overlap with that card's curated clues) and submits the best match. Same logic drives its vote.
-- If a card has no curated entry, the bot falls back to a generic poetic clue / random pick so the game still works.
+- `clues` — 5 evocative storyteller lines (used when this card is chosen).
+- `tags` — 20–30 lowercase concept/synonym words (objects, mood, archetypes,
+  e.g. for a monster card: `beast, monster, creature, fangs, claws, predator,
+  fear, danger, shadow, nightmare, …`). These tags are what the bot scores
+  free-form clues against.
 
-### (Re)generate the clue dictionary
+Matching logic (in `server/src/cardClues.ts`):
+
+- Tokenise the clue, drop stop-words, apply light stemming (`beasts` → `beast`).
+- For each clue token, **+3** if it appears in a card's tags, **+1.5** for a
+  short prefix overlap (`lighthouse` ↔ `lighthouses`), **+1** if it appears
+  inside the curated clue lines.
+- Highest-scoring card wins (random tie-break). With no curated data the bot
+  falls back to random + a generic poetic clue.
+
+This means a single-word clue like **"beast"** will hit any card whose tags
+include `beast`, `monster`, `creature`, `demon`, etc. — exactly what was
+missing in the original random implementation.
+
+### (Re)generate the dictionary
 
 Run a one-time vision pass over `client/public/cards/*.png`:
 
@@ -87,6 +103,24 @@ node scripts/generateClues.mjs --concurrency=4
 node scripts/generateClues.mjs --model=gemini-2.0-flash
 ```
 
-The script is resumable: it skips cards that already have ≥5 clues unless you pass `--force`. Results are written incrementally to `server/data/cardClues.json`. After regenerating, restart the server.
+The script is resumable: cards that already have ≥5 clues **and** ≥10 tags
+are skipped unless you pass `--force`. Results stream into
+`server/data/cardClues.json`. After regenerating, restart the server.
+
+The on-disk format is:
+
+```json
+{
+  "card-001": {
+    "clues": ["the hungry shadow", "caught by the monster", "..."],
+    "tags":  ["beast","monster","creature","fangs","claws","predator","fear","..."]
+  }
+}
+```
+
+The legacy array-only shape (`["clue1","clue2",...]`) is still loaded for
+backward compatibility — but you'll get far better matching with the new
+schema, so re-run the generator with `--force` if you have older data.
+
 
 
