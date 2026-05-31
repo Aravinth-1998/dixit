@@ -460,20 +460,34 @@ export function setTimers(room: Room, t: Partial<TimerConfig>) {
 }
 
 /**
- * Promote the first still-present, connected player to host if the current
- * host is missing or disconnected. Returns true if the host changed.
+ * Promote the first still-present, connected HUMAN player to host if the
+ * current host is missing, disconnected, or a bot. Bots are never allowed
+ * to be host — if a host leaves and the only remaining members are bots,
+ * the room is hostless (and the caller should usually delete it).
+ *
+ * Preference order:
+ *   1. A connected human (most likely to actually act).
+ *   2. Any human, even disconnected (they may rejoin).
+ *
+ * Returns true if the host pointer actually changed.
  */
 export function promoteHostIfNeeded(room: Room): boolean {
   if (room.players.length === 0) return false;
   const currentHost = room.players.find(p => p.isHost);
+  // Already a connected human host? Nothing to do.
   if (currentHost && currentHost.connected && !currentHost.isBot) return false;
-  // Prefer a connected human first — bots can fill seats but never run the
-  // game. Fall back to any connected player, then to the first player.
+
   const next =
     room.players.find(p => p.connected && !p.isBot) ??
-    room.players.find(p => p.connected) ??
-    room.players[0];
-  if (!next) return false;
+    room.players.find(p => !p.isBot);
+  // No humans left at all → leave the room hostless. Bots must never be host.
+  if (!next) {
+    if (currentHost && currentHost.isBot) {
+      currentHost.isHost = false;
+      return true;
+    }
+    return false;
+  }
   if (currentHost === next) return false;
   for (const p of room.players) p.isHost = false;
   next.isHost = true;
@@ -635,6 +649,9 @@ export function startGame(room: Room, allCardIds: string[]) {
     throw new Error('Waiting for all players to join');
   if (room.players.some(p => !p.connected))
     throw new Error('Waiting for a player to reconnect…');
+  // Randomize seating each match so the same person isn't always first
+  // storyteller and the rotation isn't predictable from join order.
+  room.players = shuffle(room.players);
   // Pick a fresh random subset of the full card pool for THIS match.
   room.deck = createDeck(allCardIds, room.players.length);
   for (const p of room.players) {

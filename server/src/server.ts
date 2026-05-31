@@ -118,13 +118,14 @@ function scheduleLobbyEviction(code: string, token: string) {
     if (!player || player.connected) return; // they came back — leave them alone
     const wasHost = player.isHost;
     room.players = room.players.filter(p => p.id !== token);
-    if (room.players.length === 0) {
+    if (room.players.length === 0 || room.players.every(p => p.isBot)) {
+      // Empty or bot-only room — nothing to keep alive.
       clearPhaseTimer(code);
       cancelBotActions(code);
       deleteRoom(code);
       return;
     }
-    if (wasHost) room.players[0].isHost = true;
+    if (wasHost) promoteHostIfNeeded(room);
     broadcast(room);
   }, LOBBY_REJOIN_GRACE_MS);
   timer.unref?.();
@@ -341,14 +342,14 @@ io.on('connection', socket => {
     if (room.phase === 'LOBBY') {
       const [removed] = room.players.splice(idx, 1);
       clearLobbyEviction(room.code, removed.id);
-      // If host left, promote next; if empty, delete room.
-      if (room.players.length === 0) {
+      // If host left, promote next; if empty / bots-only, delete room.
+      if (room.players.length === 0 || room.players.every(p => p.isBot)) {
         clearPhaseTimer(room.code);
         cancelBotActions(room.code);
         deleteRoom(room.code);
         return;
       }
-      if (removed.isHost) room.players[0].isHost = true;
+      if (removed.isHost) promoteHostIfNeeded(room);
     } else {
       // mid-game: just mark disconnected; promote a new host if needed
       room.players[idx].connected = false;

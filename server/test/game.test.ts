@@ -47,6 +47,10 @@ function mkRoom(numPlayers = 4, winScore = 10): { room: Room; tokens: string[] }
 function startedRoom(numPlayers = 4, winScore = 10) {
   const r = mkRoom(numPlayers, winScore);
   startGame(r.room, CARD_POOL);
+  // startGame shuffles room.players, so re-align the tokens[] array to
+  // match the new seating order. This way `tokens[i]` always refers to
+  // `room.players[i]`, which is what every test downstream assumes.
+  r.tokens = r.room.players.map(p => p.id);
   return r;
 }
 
@@ -395,9 +399,13 @@ describe('kickPlayer', () => {
     expect(() => kickPlayer(room, tokens[0])).toThrow();
   });
   it('ends the match if mid-game kick drops below MIN_PLAYERS', () => {
-    const { room, tokens } = startedRoom(3);
-    const ix = (room.storytellerIdx + 1) % 3;
-    const result = kickPlayer(room, tokens[ix]);
+    const { room } = startedRoom(3);
+    // Pick the first non-storyteller, non-host player to kick. After
+    // startGame's shuffle the host can be at any index, so we can't rely
+    // on a fixed offset.
+    const stId = room.players[room.storytellerIdx].id;
+    const target = room.players.find(p => !p.isHost && p.id !== stId)!;
+    const result = kickPlayer(room, target.id);
     expect(result).toBe('matchOver');
     expect(room.phase).toBe('GAME_OVER');
   });
@@ -417,11 +425,15 @@ describe('kickPlayer', () => {
   it('returns submitted cards to non-storytellers when storyteller is kicked mid-SUBMIT', () => {
     // Reproduces a bug where cards already played in the abandoned round
     // were silently discarded instead of being returned to the player's hand.
-    const { room, tokens } = startedRoom(4);
-    room.players[0].isHost = false;
-    room.players[1].isHost = true;
+    const { room } = startedRoom(4);
     const stIdx = room.storytellerIdx;
     const st = room.players[stIdx];
+    // startGame shuffles seating — re-assign host to someone OTHER than the
+    // storyteller, so we can kick the storyteller without "host can't kick
+    // themselves" tripping.
+    for (const p of room.players) p.isHost = false;
+    const newHostIdx = (stIdx + 1) % room.players.length;
+    room.players[newHostIdx].isHost = true;
     submitClue(room, st.id, st.hand[0], 'x');
     // Two non-storytellers submit cards (the third doesn't).
     const others = room.players.filter((_, i) => i !== stIdx);
@@ -432,7 +444,7 @@ describe('kickPlayer', () => {
     expect(others[0].hand).not.toContain(o0Card);
     expect(others[1].hand).not.toContain(o1Card);
 
-    kickPlayer(room, tokens[stIdx]);
+    kickPlayer(room, st.id);
 
     // After kick → round restarts. Their submitted cards must be back.
     expect(others[0].hand).toContain(o0Card);
@@ -473,6 +485,13 @@ describe('kickPlayer', () => {
     submitCard(room, others[0].id, others[0].hand[0]);
     submitCard(room, others[1].id, others[1].hand[0]);
     expect(room.phase).toBe('SUBMIT');
+    // Make sure the kick target is NOT the host (otherwise the kick would
+    // fail with "Host cannot kick themselves"). Pick another player as host
+    // first if needed.
+    if (others[2].isHost) {
+      others[2].isHost = false;
+      st.isHost = true; // storyteller can be host; we're not kicking them
+    }
     kickPlayer(room, others[2].id);
     expect(room.phase).toBe('VOTE');
   });
@@ -642,11 +661,14 @@ describe('Bots', () => {
     const { room } = mkRoom(3);
     room.players[1].isBot = true;
     startGame(room, CARD_POOL);
-    // Storyteller defaults to index 0 (the human host). Bot at 1, human at 2.
-    const st = room.players[0];
+    // startGame shuffles seating. Pin the human host as storyteller, and
+    // look up the bot / other human by role rather than by index.
+    const stIdx = room.players.findIndex(p => p.isHost);
+    room.storytellerIdx = stIdx;
+    const st = room.players[stIdx];
+    const bot = room.players.find(p => p.isBot)!;
+    const human2 = room.players.find(p => !p.isBot && !p.isHost)!;
     submitClue(room, st.id, st.hand[0], 'x');
-    const bot = room.players[1];
-    const human2 = room.players[2];
     await doBotSubmit(room, bot.id);
     submitCard(room, human2.id, human2.hand[0]);
     expect(room.phase).toBe('VOTE');
@@ -660,7 +682,11 @@ describe('Bots', () => {
     room.players[1].isBot = true;
     room.players[2].isBot = true;
     startGame(room, CARD_POOL);
-    const human = room.players[0];
+    // After startGame shuffles seating, locate the human by role and pin
+    // them as the storyteller for this scenario.
+    const humanIdx = room.players.findIndex(p => !p.isBot);
+    room.storytellerIdx = humanIdx;
+    const human = room.players[humanIdx];
     submitClue(room, human.id, human.hand[0], 'a clue');
     for (const p of room.players) if (p.isBot) await doBotSubmit(room, p.id);
     expect(room.phase).toBe('VOTE');

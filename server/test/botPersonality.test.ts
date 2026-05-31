@@ -83,8 +83,11 @@ maybe('Bot personalities (softmax sampling)', () => {
     // Force human host as storyteller, give a vague clue, hand both bots
     // the same set of cards, and check that across many trials they pick
     // different cards at least sometimes.
-    room.storytellerIdx = 0;
-    const st = room.players[0];
+    // After startGame the player order is shuffled — locate the human host
+    // by role so they (not a bot) end up as storyteller for this scenario.
+    const stIdx = room.players.findIndex(p => !p.isBot);
+    room.storytellerIdx = stIdx;
+    const st = room.players[stIdx];
     submitClue(room, st.id, st.hand[0], 'mystery');
 
     const bot1 = room.players.find(p => p.id === b1)!;

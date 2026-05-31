@@ -36,15 +36,19 @@ function Avatar({
   player,
   size = 22,
   isHost = false,
+  isBot = false,
 }: {
   player: { id: string; name: string };
   size?: number;
   isHost?: boolean;
+  isBot?: boolean;
 }) {
   const bg = playerColor(player.id);
   return (
     <span
-      className={'avatar-wrap' + (isHost ? ' is-host' : '')}
+      className={
+        'avatar-wrap' + (isHost ? ' is-host' : '') + (isBot ? ' is-bot' : '')
+      }
       style={{ width: size, height: size }}
     >
       <span
@@ -67,6 +71,16 @@ function Avatar({
           style={{ fontSize: Math.max(10, Math.round(size * 0.55)) }}
         >
           👑
+        </span>
+      )}
+      {isBot && (
+        <span
+          className="avatar-bot"
+          title="AI bot"
+          aria-label="AI bot"
+          style={{ fontSize: Math.max(9, Math.round(size * 0.50)) }}
+        >
+          🤖
         </span>
       )}
     </span>
@@ -671,8 +685,7 @@ function PlayersBar({
         return (
           <div key={p.id} className={cls.join(' ')}>
             <div className="pcard-row">
-              <Avatar player={p} size={22} isHost={p.isHost} />
-              {p.isBot && <span className="pcard-role" title="AI bot">🤖</span>}
+              <Avatar player={p} size={22} isHost={p.isHost} isBot={p.isBot} />
               {isStoryteller && <span className="pcard-role" title="Storyteller">🎙️</span>}
               <span className="pcard-name" title={p.name}>{p.name}</span>
               {isDone && <span className="pcard-done" title="Ready">✓</span>}
@@ -1331,11 +1344,16 @@ function GameOver({
       if (!blob) return setError('Could not generate image');
       const file = new File([blob], 'dixit-results.png', { type: 'image/png' });
       const nav = navigator as any;
+      const siteUrl = window.location.origin + window.location.pathname.replace(/\/+$/, '');
+      const caption =
+        `🎨 Dixit — winner: ${winners.map(w => w.name).join(', ')}\n` +
+        `Play with friends: ${siteUrl}`;
       if (nav.canShare?.({ files: [file] })) {
         await nav.share({
           files: [file],
           title: 'Dixit results',
-          text: `🎨 Dixit — winner: ${winners.map(w => w.name).join(', ')}`,
+          text: caption,
+          url: siteUrl,
         });
         return;
       }
@@ -1355,24 +1373,32 @@ function GameOver({
   };
 
   const sortedScores = [...state.players].sort((a, b) => b.score - a.score);
+  const ranks = computeRanks(sortedScores);
 
   return (
     <>
       {/* Underlying panel — visible after OK is clicked. */}
-      <div className="panel">
-        <h2>🏆 Game over</h2>
-        <p style={{ fontSize: 18 }}>
+      <div className="panel gameover-panel">
+        <div className="gameover-trophy" aria-hidden="true">🏆</div>
+        <h2 className="gameover-title">Game over</h2>
+        <p className="gameover-subtitle">
           Winner{winners.length > 1 ? 's' : ''}:{' '}
           <b>{winners.map(w => w.name).join(', ')}</b>
         </p>
-        {sortedScores.map(p => (
-          <div key={p.id} className="score-row">
-            <Avatar player={p} size={20} />
-            <span>{p.name}</span>
-            <span className="spacer" />
-            <span style={{ fontWeight: 700 }}>{p.score}</span>
-          </div>
-        ))}
+        <div className="gameover-scores">
+          {sortedScores.map((p, i) => {
+            const rank = ranks[i];
+            const rankCls = rank <= 3 ? ` r${rank}` : '';
+            return (
+              <div key={p.id} className={'gameover-score-row' + rankCls}>
+                <span className="gameover-rank">#{rank}</span>
+                <Avatar player={p} size={22} isHost={p.isHost} />
+                <span className="gameover-name">{p.name}</span>
+                <span className="gameover-pts">{p.score}</span>
+              </div>
+            );
+          })}
+        </div>
         <div className="row" style={{ marginTop: 14 }}>
           <button className="btn secondary" onClick={share}>
             📤 Share results
@@ -1417,18 +1443,7 @@ function GameOverModal({
 }) {
   // Standard competition ranking ("1224"): tied players share the same
   // rank, the next rank below is skipped. `scores` is already sorted desc.
-  const ranks: number[] = [];
-  let lastScore = Number.POSITIVE_INFINITY;
-  let lastRank = 0;
-  scores.forEach((p, i) => {
-    if (p.score === lastScore) {
-      ranks.push(lastRank);
-    } else {
-      ranks.push(i + 1);
-      lastRank = i + 1;
-      lastScore = p.score;
-    }
-  });
+  const ranks = computeRanks(scores);
 
   return (
     <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="Game over">
@@ -1511,6 +1526,23 @@ function Confetti() {
       ))}
     </div>
   );
+}
+
+/** Standard competition ranking ("1224") over a desc-sorted score list. */
+function computeRanks(scores: PublicPlayer[]): number[] {
+  const ranks: number[] = [];
+  let lastScore = Number.POSITIVE_INFINITY;
+  let lastRank = 0;
+  scores.forEach((p, i) => {
+    if (p.score === lastScore) {
+      ranks.push(lastRank);
+    } else {
+      ranks.push(i + 1);
+      lastRank = i + 1;
+      lastScore = p.score;
+    }
+  });
+  return ranks;
 }
 
 /** Draw a shareable summary PNG of the final scores. */

@@ -127,8 +127,10 @@ describe('bot uses curated clues for matching', () => {
       const botId = addBot(room);
       for (const p of room.players) p.connected = true;
       startGame(room, POOL);
-      room.storytellerIdx = 0;
-      const st = room.players[0];
+      // startGame shuffles seating — pick the human host to be storyteller.
+      const stIdx = room.players.findIndex(p => !p.isBot);
+      room.storytellerIdx = stIdx;
+      const st = room.players[stIdx];
       st.hand = ['card-020', ...st.hand].slice(0, 6);
       submitClue(room, st.id, st.hand[0], 'lighthouse');
       const bot = room.players.find(p => p.id === botId)!;
@@ -150,9 +152,12 @@ describe('bot uses curated clues for matching', () => {
       const botId = addBot(room);
       for (const p of room.players) p.connected = true;
       startGame(room, POOL);
-      room.storytellerIdx = 0;
-      const st = room.players[0];
-      const p1 = room.players[1];
+      // startGame shuffles seating — pin the human host as storyteller, find
+      // the remaining human as p1, and the bot by id.
+      const stIdx = room.players.findIndex(p => p.isHost);
+      room.storytellerIdx = stIdx;
+      const st = room.players[stIdx];
+      const p1 = room.players.find(p => !p.isBot && !p.isHost)!;
       const bot = room.players.find(p => p.id === botId)!;
       st.hand = ['card-030', ...st.hand].slice(0, 6);
       p1.hand = ['card-031', ...p1.hand].slice(0, 6);

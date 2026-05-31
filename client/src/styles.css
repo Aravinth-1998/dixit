@@ -528,6 +528,20 @@ input[type=text], input[type=number] {
   user-select: none;
 }
 
+/* Bot marker: small robot peeking from the bottom-right corner of the
+   avatar. Uses the opposite corner from the host crown so the two can
+   coexist visually (a bot will never actually be host today, but this
+   keeps the layout safe and visually distinct). */
+.avatar-bot {
+  position: absolute;
+  right: -22%;
+  bottom: -22%;
+  line-height: 1;
+  pointer-events: none;
+  filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.6));
+  user-select: none;
+}
+
 /* 3D card flip (REVEAL phase) */
 .flip-card {
   position: relative;
@@ -768,6 +782,9 @@ input[type=text], input[type=number] {
 }
 
 .gameover-modal {
+  text-align: center;
+}
+.gameover-panel {
   text-align: center;
 }
 .gameover-trophy {
