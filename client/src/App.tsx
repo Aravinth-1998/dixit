@@ -599,7 +599,24 @@ function Game({
 
 function RoomBar({ state }: { state: PrivateState }) {
   const link = `${location.origin}/?room=${state.code}`;
-  const copy = () => navigator.clipboard?.writeText(link);
+  const [copied, setCopied] = useState(false);
+  const copy = async () => {
+    try {
+      await navigator.clipboard?.writeText(link);
+    } catch {
+      // Fallback for non-secure contexts / older browsers.
+      const ta = document.createElement('textarea');
+      ta.value = link;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand('copy'); } catch { /* ignore */ }
+      ta.remove();
+    }
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1800);
+  };
   // Hide the room code / invite link once the match is in progress —
   // it's only useful for joining (LOBBY) or for the next match (GAME_OVER).
   const showCode = state.phase === 'LOBBY' || state.phase === 'GAME_OVER';
@@ -619,7 +636,13 @@ function RoomBar({ state }: { state: PrivateState }) {
         <div style={{ fontSize: 28, fontWeight: 800, letterSpacing: 6 }}>{state.code}</div>
       </div>
       <span className="spacer" />
-      <button className="btn ghost" onClick={copy}>Copy invite link</button>
+      <button
+        className={'btn ghost copy-btn' + (copied ? ' copied' : '')}
+        onClick={copy}
+        aria-live="polite"
+      >
+        {copied ? '✓ Link copied' : 'Copy invite link'}
+      </button>
     </div>
   );
 }
@@ -1345,9 +1368,10 @@ function GameOver({
       const file = new File([blob], 'dixit-results.png', { type: 'image/png' });
       const nav = navigator as any;
       const siteUrl = window.location.origin + window.location.pathname.replace(/\/+$/, '');
-      const caption =
-        `🎨 Dixit — winner: ${winners.map(w => w.name).join(', ')}\n` +
-        `Play with friends: ${siteUrl}`;
+      // Note: we intentionally do NOT repeat the URL in `text` — most share
+      // targets (WhatsApp, Telegram, iMessage, Slack, …) append `url` to
+      // the caption automatically, which would otherwise show the link twice.
+      const caption = `🎨 Dixit — winner: ${winners.map(w => w.name).join(', ')} · Play with friends:`;
       if (nav.canShare?.({ files: [file] })) {
         await nav.share({
           files: [file],
@@ -1545,100 +1569,189 @@ function computeRanks(scores: PublicPlayer[]): number[] {
   return ranks;
 }
 
-/** Draw a shareable summary PNG of the final scores. */
+/** Draw a shareable summary PNG of the final scores.
+ *  Layout mirrors the in-app GameOverModal: centered trophy + title +
+ *  "Winner(s):" subtitle, then ranked rows with gold/silver/bronze
+ *  left stripes for the top 3 (matches .gameover-* CSS). */
 async function renderShareImage(state: PrivateState): Promise<Blob | null> {
   const W = 1080;
-  const headerH = 180;
-  const rowH = 88;
   const padding = 56;
+  const trophyH = 140;
+  const titleH = 70;
+  const subtitleH = 50;
+  const headerGap = 28;
+  const rowH = 96;
+  const rowGap = 12;
+  const footerH = 90;
+
   const sorted = [...state.players].sort((a, b) => b.score - a.score);
-  const H = headerH + sorted.length * rowH + padding * 2 + 80;
+  const ranks = computeRanks(sorted);
+  const winners = sorted.filter(p => state.winnerIds.includes(p.id));
+
+  const headerH = trophyH + titleH + subtitleH + headerGap;
+  const scoresH = sorted.length * rowH + (sorted.length - 1) * rowGap;
+  const H = padding + headerH + scoresH + footerH + padding;
+
   const canvas = document.createElement('canvas');
   canvas.width = W;
   canvas.height = H;
   const ctx = canvas.getContext('2d');
   if (!ctx) return null;
 
-  // Background
+  // Background — same indigo→slate gradient family the app uses.
   const bg = ctx.createLinearGradient(0, 0, W, H);
   bg.addColorStop(0, '#312e81');
   bg.addColorStop(1, '#0f172a');
   ctx.fillStyle = bg;
   ctx.fillRect(0, 0, W, H);
 
-  // Header
+  // ---- Header: centered trophy + title + subtitle ----
+  const cx = W / 2;
+  let y = padding;
+
+  // Trophy glow
+  ctx.save();
+  ctx.shadowColor = 'rgba(234, 179, 8, 0.45)';
+  ctx.shadowBlur = 28;
+  ctx.font = '120px "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
+  ctx.fillText('🏆', cx, y);
+  ctx.restore();
+  y += trophyH;
+
+  // Title
   ctx.fillStyle = '#f8fafc';
-  ctx.font = 'bold 64px Georgia, serif';
-  ctx.textAlign = 'left';
-  ctx.fillText('🎨 Dixit', padding, padding + 60);
+  ctx.font = 'bold 56px -apple-system, "Segoe UI", Roboto, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
+  ctx.fillText('Game over', cx, y);
+  y += titleH;
+
+  // Subtitle: "Winner(s): name1, name2"
+  const subtitlePrefix = `Winner${winners.length > 1 ? 's' : ''}: `;
+  const subtitleNames = winners.map(w => w.name).join(', ') || '—';
+  ctx.font = '26px -apple-system, "Segoe UI", Roboto, sans-serif';
   ctx.fillStyle = '#94a3b8';
-  ctx.font = '28px -apple-system, "Segoe UI", Roboto, sans-serif';
-  ctx.fillText(`Room ${state.code} · ${state.history.length} rounds`, padding, padding + 110);
+  const prefixW = ctx.measureText(subtitlePrefix).width;
+  ctx.font = 'bold 26px -apple-system, "Segoe UI", Roboto, sans-serif';
+  const namesW = ctx.measureText(subtitleNames).width;
+  const totalW = prefixW + namesW;
+  const subtitleX = cx - totalW / 2;
+  ctx.textAlign = 'left';
+  ctx.font = '26px -apple-system, "Segoe UI", Roboto, sans-serif';
+  ctx.fillStyle = '#94a3b8';
+  ctx.fillText(subtitlePrefix, subtitleX, y);
+  ctx.font = 'bold 26px -apple-system, "Segoe UI", Roboto, sans-serif';
+  ctx.fillStyle = '#f8fafc';
+  ctx.fillText(subtitleNames, subtitleX + prefixW, y);
+  y += subtitleH + headerGap;
 
-  // Winner badge
-  const winners = sorted.filter(p => state.winnerIds.includes(p.id));
-  ctx.fillStyle = '#fde68a';
-  ctx.font = 'bold 36px -apple-system, "Segoe UI", Roboto, sans-serif';
-  ctx.textAlign = 'right';
-  const winnerText =
-    winners.length > 1
-      ? `🏆 ${winners.map(w => w.name).join(' & ')}`
-      : `🏆 ${winners[0]?.name ?? '—'}`;
-  ctx.fillText(winnerText, W - padding, padding + 80);
+  // ---- Score rows ----
+  // Medal colours match CSS: r1 gold, r2 silver, r3 bronze.
+  const medalColor = (rank: number): string | null =>
+    rank === 1 ? '#fde047' : rank === 2 ? '#cbd5e1' : rank === 3 ? '#fb923c' : null;
 
-  // Score rows
-  let y = headerH + padding;
+  const rowX = padding;
+  const rowW = W - padding * 2;
+  const stripeW = 10;
+  const rowRadius = 18;
+
   for (let i = 0; i < sorted.length; i++) {
     const p = sorted[i];
-    const isWinner = state.winnerIds.includes(p.id);
-    const rowY = y + i * rowH;
+    const rank = ranks[i];
+    const medal = medalColor(rank);
+    const rowY = y + i * (rowH + rowGap);
+
     // Row background
-    ctx.fillStyle = isWinner ? 'rgba(253, 230, 138, 0.12)' : 'rgba(30, 41, 59, 0.6)';
-    roundRect(ctx, padding, rowY, W - padding * 2, rowH - 14, 18);
+    ctx.fillStyle = 'rgba(30, 41, 59, 0.6)';
+    roundRect(ctx, rowX, rowY, rowW, rowH, rowRadius);
     ctx.fill();
+    ctx.strokeStyle = '#334155';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    // Medal left stripe (top 3 only) — clipped to row's rounded corners.
+    if (medal) {
+      ctx.save();
+      roundRect(ctx, rowX, rowY, rowW, rowH, rowRadius);
+      ctx.clip();
+      ctx.fillStyle = medal;
+      ctx.fillRect(rowX, rowY, stripeW, rowH);
+      ctx.restore();
+    }
+
+    const midY = rowY + rowH / 2;
+    const contentX = rowX + stripeW + 24;
+
+    // Rank
+    ctx.fillStyle = medal ?? '#94a3b8';
+    ctx.font = 'bold 30px -apple-system, "Segoe UI", Roboto, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    const rankText = `#${rank}`;
+    ctx.fillText(rankText, contentX, midY);
+    const rankW = ctx.measureText(rankText).width;
 
     // Avatar circle
+    const avatarX = contentX + rankW + 28;
+    const avatarR = 26;
     ctx.fillStyle = playerColor(p.id);
     ctx.beginPath();
-    ctx.arc(padding + 44, rowY + (rowH - 14) / 2, 26, 0, Math.PI * 2);
+    ctx.arc(avatarX + avatarR, midY, avatarR, 0, Math.PI * 2);
     ctx.fill();
     ctx.fillStyle = '#0f172a';
     ctx.font = 'bold 28px -apple-system, "Segoe UI", Roboto, sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(playerInitial(p.name), padding + 44, rowY + (rowH - 14) / 2 + 1);
+    ctx.fillText(playerInitial(p.name), avatarX + avatarR, midY + 1);
 
-    // Rank
-    ctx.fillStyle = '#94a3b8';
-    ctx.font = 'bold 26px -apple-system, "Segoe UI", Roboto, sans-serif';
-    ctx.textAlign = 'left';
+    // Score (right-aligned)
+    ctx.fillStyle = medal ?? '#f8fafc';
+    ctx.font = 'bold 42px -apple-system, "Segoe UI", Roboto, sans-serif';
+    ctx.textAlign = 'right';
     ctx.textBaseline = 'middle';
-    ctx.fillText(`#${i + 1}`, padding + 90, rowY + (rowH - 14) / 2);
+    const scoreText = String(p.score);
+    const scoreX = rowX + rowW - 28;
+    ctx.fillText(scoreText, scoreX, midY);
+    const scoreW = ctx.measureText(scoreText).width;
 
-    // Name
+    // Name — truncate to fit between avatar and score.
+    const nameX = avatarX + avatarR * 2 + 18;
+    const nameMaxW = scoreX - scoreW - 24 - nameX;
     ctx.fillStyle = '#f8fafc';
     ctx.font = '32px -apple-system, "Segoe UI", Roboto, sans-serif';
-    ctx.fillText(p.name, padding + 150, rowY + (rowH - 14) / 2);
-
-    // Score
-    ctx.fillStyle = isWinner ? '#fde68a' : '#f8fafc';
-    ctx.font = 'bold 44px -apple-system, "Segoe UI", Roboto, sans-serif';
-    ctx.textAlign = 'right';
-    ctx.fillText(String(p.score), W - padding - 24, rowY + (rowH - 14) / 2);
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(truncateToWidth(ctx, p.name, nameMaxW), nameX, midY);
   }
 
-  // Footer
+  // ---- Footer: room + rounds + branding ----
   ctx.fillStyle = '#64748b';
   ctx.font = '22px -apple-system, "Segoe UI", Roboto, sans-serif';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'alphabetic';
   ctx.fillText(
-    `First to ${state.winScore} · ${state.players.length} players`,
-    W / 2,
-    H - padding / 1.5,
+    `🎨 Dixit · Room ${state.code} · ${state.history.length} rounds · first to ${state.winScore}`,
+    cx,
+    H - padding,
   );
 
   return await new Promise(resolve => canvas.toBlob(b => resolve(b), 'image/png'));
+}
+
+/** Truncate text with an ellipsis so it fits within `maxW` pixels. */
+function truncateToWidth(ctx: CanvasRenderingContext2D, text: string, maxW: number): string {
+  if (ctx.measureText(text).width <= maxW) return text;
+  const ell = '…';
+  let lo = 0;
+  let hi = text.length;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (ctx.measureText(text.slice(0, mid) + ell).width <= maxW) lo = mid;
+    else hi = mid - 1;
+  }
+  return text.slice(0, lo) + ell;
 }
 
 function roundRect(
